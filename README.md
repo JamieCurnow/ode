@@ -1,6 +1,8 @@
 # Ode 🎙️
 
-Hold-to-talk dictation for macOS, like Claude Code's voice input but in any app. Speech is transcribed on-device, then cleaned up by **the Claude Code you already have installed**: no API key, it uses your existing Claude plan.
+Hold-to-talk dictation for macOS powered by Claude Code CLI.
+
+Speech is transcribed on-device, then cleaned up by **the Claude Code you already have installed**: no API key, it uses your existing Claude plan.
 
 > ⚠️ **Requires [Claude Code](https://claude.com/claude-code), installed and signed in on this Mac.** Ode runs the local `claude` CLI for cleanup.
 > ```bash
