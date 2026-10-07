@@ -14,7 +14,7 @@ jobs:
   build:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Toolchain
         run: |
@@ -32,7 +32,7 @@ jobs:
           mkdir -p overlay && build/Ode.app/Contents/MacOS/Ode --test-overlay overlay &
           sleep 15; ls overlay/overlay-0.png
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: Ode
           path: |
