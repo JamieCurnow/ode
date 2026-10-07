@@ -1,108 +1,95 @@
 # Ode 🎙️
 
-**Hold a key. Talk. Let go. Your words land wherever you're typing, cleaned up by Claude and written the way *you* write.**
+Hold-to-talk dictation for macOS, like Claude Code's voice input but in any app. Speech is transcribed on-device, then cleaned up by **the Claude Code you already have installed**: no API key, it uses your existing Claude plan.
 
-Ode is a tiny macOS menu bar app that gives you Claude Code's hold-to-talk voice input *everywhere*: Slack, email, your terminal, that Jira ticket you've been avoiding. It runs the cleanup through the [Claude Code](https://claude.com/claude-code) you already have installed, so there's no API key and no extra subscription. It just uses your Claude plan.
+> ⚠️ **Requires [Claude Code](https://claude.com/claude-code), installed and signed in on this Mac.** Ode runs the local `claude` CLI for cleanup.
+> ```bash
+> curl -fsSL https://claude.ai/install.sh | bash   # then run `claude` once to sign in
+> ```
+
+Also requires macOS 26+ on Apple Silicon. It uses the new on-device `SpeechAnalyzer` API.
 
 ```
-  hold ⌥ ──▶ 🎤 on-device speech-to-text ──▶ 🧠 Claude Haiku tidies it up ──▶ 📋 pasted where you're typing
-              (live preview as you talk)        (in *your* style)              (clipboard restored after)
+hold ⌥ → 🎤 on-device transcription (live preview) → 🧠 claude -p (Haiku, your style guide) → 📋 pasted at your cursor
 ```
 
-> "um yeah so I think we should uh probably move the the standup to like ten tomorrow"
->
-> → `yeah so I think we should probably move the standup to 10 tomorrow`
-
-## Install (30 seconds)
+## 📦 Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jamiecurnow/ode/main/install.sh | bash
 ```
 
-That drops `Ode.app` into `~/Applications`, launches it, and a setup window walks you through the rest (mic, accessibility, picking your key, and teaching it your style).
+This installs to `~/Applications` and launches it. A setup window covers the microphone and accessibility permissions, your choice of key, and personalisation.
 
-**You'll need:** an Apple Silicon Mac on **macOS 26+**, and [Claude Code](https://claude.com/claude-code) installed and logged in (`curl -fsSL https://claude.ai/install.sh | bash`, then run `claude` once).
+Or download `Ode.dmg` from [Releases](https://github.com/jamiecurnow/ode/releases/latest). It isn't notarised, so on first launch go to System Settings › Privacy & Security › **Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/Ode.app`.
 
-<details>
-<summary>Prefer a DMG?</summary>
+## 🧠 How it works
 
-Grab `Ode.dmg` from [Releases](https://github.com/jamiecurnow/ode/releases/latest) and drag Ode to Applications. It's not notarised (fun side project, no Apple tax), so the first time macOS will say it can't verify it. Go to **System Settings › Privacy & Security** and click **Open Anyway**, or run:
+- **Transcription** uses macOS's on-device `SpeechAnalyzer`, so audio never leaves your Mac. The OS manages the models, so there's nothing to download.
+- **Cleanup** sends the transcript text to Claude Haiku through your local `claude` CLI. One idle `claude -p` process (stream-json, no tools or MCP, thinking off) is always kept ready, which brings cleanup to about 0.7s instead of a 2-4s cold start. Each dictation uses a fresh process.
+- **Style:** cleanup follows `~/Library/Application Support/Ode/style.md`. It removes filler, applies spoken corrections and matches how you write. It never answers or rewrites what you said.
+- **Vocabulary:** the style guide's Vocabulary list biases speech recognition and helps Claude fix misheard names.
+- **App-aware:** Slack gets `:shortcodes:`, mail and docs get full sentences, everything else is casual.
+- **Clipboard:** pastes with ⌘V, then restores the full previous clipboard. The temporary text is marked transient so clipboard managers skip it.
+- **Fallbacks:** if Claude is slow or fails, the raw transcript is pasted. If Ode can't paste, the text is left on the clipboard.
 
-```bash
-xattr -dr com.apple.quarantine /Applications/Ode.app
-```
-</details>
+## 🪄 Tuning your style
 
-## What makes it nice
+Ode uses Claude Code to edit its own style guide. Each option below opens an interactive `claude` session in Terminal:
 
-- **⚡️ Fast.** A Claude Code process is kept warm in the background (`claude -p` in stream-json mode, no tools, no MCP, thinking off), so cleanup is ~0.7s instead of the 2-4s cold start. Release-to-paste is about a second.
-- **👀 Live preview.** A little pill shows your words as you speak, using macOS 26's on-device `SpeechAnalyzer`. No Whisper models to download, nothing to get randomly deleted.
-- **🗣️ Sounds like you.** Cleanup follows *your* style guide: casing, slang, emoji habits, how you write in Slack vs email. It removes the ums and keeps your words.
-- **🪄 Self-tuning, with Claude.** "Personalise" opens a Claude Code session that reads some of *your own* sent messages through *your* connected tools (Slack, Gmail…) and writes your style guide. "Feedback on Last Dictation" lets you say what it got wrong, and Claude fixes the style guide and re-tests it. Nobody touches code.
-- **📖 Knows your words.** A Vocabulary list biases the speech recognition *and* tells Claude that "super base" means Supabase.
-- **📋 Doesn't eat your clipboard.** Every clipboard type is snapshotted and restored after pasting, so your copied API key survives. The temporary text is marked transient so clipboard managers ignore it.
-- **🧯 Fails gracefully.** Claude slow or offline? You get the raw transcript instead. Dictate a question? It gets cleaned up, not answered.
-- **App-aware.** Slack gets `:shortcodes:`, Mail gets full sentences, everything else gets casual.
-
-## Using it
-
-| | |
+| Menu item | What it does |
 |---|---|
-| **Hold Left Option** (configurable) | Talk. Let go to paste. |
-| Press another key while holding | Cancels, so ⌥-shortcuts still work |
-| Menu bar ▸ **Feedback on Last Dictation…** | "It wrote X, I meant Y" → Claude fixes it |
-| Menu bar ▸ **Improve My Style with Claude…** | General tweaks ("less emoji", "I never say 'gonna'") |
-| Menu bar ▸ **Edit Style Guide File…** | Hand-edit `~/Library/Application Support/Ode/style.md` |
-| Menu bar ▸ **Copy Last Raw Transcript** | See what the mic actually heard |
+| **Setup & Personalise › Personalise** | Reads a sample of your own sent messages through your connected MCP tools (Slack, Gmail…) and writes your style guide and vocabulary. You approve each tool call. |
+| **Feedback on Last Dictation…** | Shows Claude the raw and cleaned text. You say what was wrong; it updates the style guide and re-tests. |
+| **Improve My Style with Claude…** | General changes. |
+| **Edit Style Guide File…** | Edit `style.md` by hand. |
 
-Spoken formatting works too: "new line", "new paragraph", "bullet point", "thumbs up emoji", and self-corrections like "at 3, no sorry, 4pm".
+## ⌨️ Usage
 
-## Hacking on it
+- Hold **Left Option** (configurable), speak, release.
+- Pressing another key while holding cancels, so ⌥ shortcuts still work.
+- Spoken formatting: "new line", "new paragraph", "bullet point", "thumbs up emoji". Self-corrections like "at 3, no sorry, 4pm" are applied.
+- **Copy Last Raw Transcript** shows what the mic heard before cleanup.
 
-It's a single SwiftPM executable, about 1,900 lines of Swift, no dependencies.
+## 🛠️ Development
+
+A single SwiftPM executable with no dependencies.
 
 ```bash
 git clone https://github.com/jamiecurnow/ode && cd ode
-./scripts/build.sh --install     # build, sign, install to ~/Applications, launch
+./scripts/build.sh --install    # build, sign, install to ~/Applications, launch
 ```
 
-If you have an Apple Development certificate, the build script signs with it, so macOS remembers your permissions between rebuilds. Without one it ad-hoc signs and you'll re-grant mic and accessibility after each rebuild.
+Builds are signed with your Apple Development certificate if you have one, so permissions persist across rebuilds. Otherwise they're ad-hoc signed.
 
-Handy test modes, no talking required:
+Test modes:
 
 ```bash
-# Run transcripts through the real cleanup pipeline (one per line), with timings
-echo "um can you send me the the link" | build/Ode.app/Contents/MacOS/Ode --test-clean Slack
-
-# Transcribe an audio file, with and without your Vocabulary
-say -o /tmp/hi.aiff "deploy it to super base" && build/Ode.app/Contents/MacOS/Ode --test-transcribe /tmp/hi.aiff
-
-# Render the overlay pill to PNGs
-build/Ode.app/Contents/MacOS/Ode --test-overlay /tmp
+echo "um send me the the link" | build/Ode.app/Contents/MacOS/Ode --test-clean Slack   # cleanup + timings
+build/Ode.app/Contents/MacOS/Ode --test-transcribe file.aiff                          # transcription ± vocabulary
+build/Ode.app/Contents/MacOS/Ode --test-overlay /tmp                                  # render overlay PNGs
 ```
 
-| File | What lives there |
+| File | |
 |---|---|
-| `App.swift` | Menu bar, hold-to-talk flow, permissions |
-| `Transcriber.swift` | `SpeechAnalyzer` + `DictationTranscriber`, live results, vocabulary biasing |
-| `ClaudeCleaner.swift` | The warm `claude -p` process pool and stream-json plumbing |
-| `StyleGuide.swift` | The cleanup rules + your `style.md` |
-| `Paster.swift` | ⌘V with full clipboard snapshot/restore |
-| `AgentSession.swift` | Launches the Personalise and Feedback Claude Code sessions |
-| `SetupWindow.swift`, `Overlay.swift`, `HotkeyMonitor.swift` | The UI bits |
+| `App.swift` | Menu bar, dictation flow, permissions |
+| `Transcriber.swift` | `SpeechAnalyzer` / `DictationTranscriber`, vocabulary |
+| `ClaudeCleaner.swift` | Warm `claude -p` process, stream-json |
+| `StyleGuide.swift` | Cleanup rules, `style.md` |
+| `Paster.swift` | Paste and clipboard restore |
+| `AgentSession.swift` | Claude Code sessions for tuning |
+| `SetupWindow.swift`, `Overlay.swift`, `HotkeyMonitor.swift` | UI and hotkey |
 
-Releases: push a `v*` tag and GitHub Actions builds, packages (`Ode.zip` + `Ode.dmg`) and publishes the release.
+Pushing a `v*` tag builds and publishes `Ode.zip` and `Ode.dmg` via GitHub Actions.
 
-## FAQ
+## ❓ FAQ
 
-**Does it cost anything?** Only your existing Claude plan. Each dictation is one small Haiku request, and it counts towards your plan's usage limits like any `claude -p` call.
+**Cost?** Each dictation is one small Haiku request through `claude -p`, counted against your Claude plan's usage limits.
 
-**Where does my voice go?** Nowhere. Speech recognition is on-device. Only the *text* goes to Claude, via your own Claude Code. The log (`~/Library/Logs/Ode.log`) records timings, never your words.
+**Privacy?** Audio stays on-device. Only the transcript text goes to Claude, through your Claude Code. The log (`~/Library/Logs/Ode.log`) records timings, not text.
 
-**Why not just call the API?** Because then you'd need an API key and a second bill. Ode drives the official `claude` CLI and never touches your login tokens. Anthropic's rules on subscription use by third-party tools have changed a few times, so if that ever changes, a BYO-API-key option is the obvious next feature. PRs welcome.
-
-**Why "Ode"?** A poem written to be spoken aloud. Also it's short, and nothing else on GitHub that does this was called it. 🎭
+**Subscription terms?** Ode calls the official `claude` CLI and never touches your credentials. Anthropic's rules on subscription use by third-party tools have changed before, so check the current terms.
 
 ---
 
-Not affiliated with Anthropic. Built in an afternoon by talking to Claude, which felt appropriate. MIT licensed.
+MIT · Not affiliated with Anthropic.
