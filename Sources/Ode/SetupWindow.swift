@@ -39,6 +39,8 @@ final class SetupModel {
     var claude: ClaudeStatus = .checking
     var micGranted = false
     var accessibilityGranted = false
+    /// The style guide no longer matches the default, i.e. Personalise (or the user) has written it.
+    var personalised = false
     var hotkey: Hotkey
     var tryText = ""
 
@@ -66,6 +68,10 @@ final class SetupModel {
     func refreshPermissions() {
         micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         accessibilityGranted = AXIsProcessTrusted()
+        let style = (try? String(contentsOf: AppPaths.styleFile, encoding: .utf8)) ?? ""
+        personalised = !style.isEmpty
+            && style.trimmingCharacters(in: .whitespacesAndNewlines)
+            != StyleGuide.defaultStyle.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func recheckClaude() {
@@ -189,9 +195,9 @@ struct SetupView: View {
                 StepRow(
                     number: 6, title: "Make it sound like you",
                     detail: "Opens Claude Code in Terminal. It uses your connected tools (like Slack or Gmail) to read some of your own recent messages, then writes your personal style guide and a list of names it should know. You approve each tool it uses.",
-                    done: false
+                    done: model.personalised
                 ) {
-                    Button("Personalise") { AgentSession.launch(.personalise) }
+                    Button(model.personalised ? "Personalise Again" : "Personalise") { AgentSession.launch(.personalise) }
                         .disabled(!model.claudeReady)
                 }
             }
