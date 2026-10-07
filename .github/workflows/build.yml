@@ -1,0 +1,46 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          swift --version
+
+      - name: Build and package
+        env:
+          CODESIGN_IDENTITY: ""   # ad-hoc sign on CI
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
+        run: ./scripts/build.sh --dist
+
+      - name: Smoke test
+        run: |
+          mkdir -p overlay && build/Ode.app/Contents/MacOS/Ode --test-overlay overlay &
+          sleep 15; ls overlay/overlay-0.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ode
+          path: |
+            build/Ode.zip
+            build/Ode.dmg
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" build/Ode.zip build/Ode.dmg --title "Ode $GITHUB_REF_NAME" --generate-notes
