@@ -7,7 +7,9 @@ import Foundation
 /// spawned, so every cleanup starts from an empty context.
 @MainActor
 final class ClaudeCleaner {
-    var model = "haiku"
+    /// Pinned to a full model ID rather than the `haiku` alias, so cleanup behaves the same for
+    /// everyone regardless of what the user's claude CLI maps the alias to.
+    var model = "claude-haiku-5-5"
     var timeout: Duration = .milliseconds(2500)
 
     private var warm: ClaudeProcess?
@@ -171,6 +173,10 @@ final class ClaudeProcess: @unchecked Sendable {
         ]
         var env = ProcessInfo.processInfo.environment
         env["MAX_THINKING_TOKENS"] = "0"
+        // Don't let a user's model overrides redirect the pinned model.
+        for key in ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"] {
+            env.removeValue(forKey: key)
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         env["PATH"] = ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", env["PATH"] ?? ""]
             .joined(separator: ":")

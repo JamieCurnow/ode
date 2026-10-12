@@ -40,11 +40,11 @@ Ode uses Claude Code to edit its own style guide. Each option below opens an int
 ## 🧠 How it works
 
 ```
-hold ⌥ → 🎤 on-device transcription (live preview) → 🧠 claude -p (Haiku, your style guide) → 📋 pasted at your cursor
+hold ⌥ → 🎤 on-device transcription (live preview) → 🧠 claude -p (Haiku 5.5, your style guide) → 📋 pasted at your cursor
 ```
 
 - **Transcription** uses macOS's on-device `SpeechAnalyzer`, so audio never leaves your Mac. The OS manages the models, so there's nothing to download.
-- **Cleanup** sends the transcript text to Claude Haiku through your local `claude` CLI. One idle `claude -p` process (stream-json, no tools or MCP, thinking off) is always kept ready, which brings cleanup to about 0.7s instead of a 2-4s cold start. Each dictation uses a fresh process, and each one is a small request against your plan's usage limits.
+- **Cleanup** sends the transcript text to Claude Haiku 5.5 (pinned, so it does not follow your CLI's `haiku` alias) through your local `claude` CLI. One idle `claude -p` process (stream-json, no tools or MCP, thinking off) is always kept ready, which brings cleanup to about 0.7s instead of a 2-4s cold start. Each dictation uses a fresh process, and each one is a small request against your plan's usage limits.
 - **Style:** cleanup follows `~/Library/Application Support/Ode/style.md`. It removes filler, applies spoken corrections and matches how you write. It never answers or rewrites what you said.
 - **Vocabulary:** the style guide's Vocabulary list biases speech recognition and helps Claude fix misheard names.
 - **App-aware:** Slack gets `:shortcodes:`, mail and docs get full sentences, everything else is casual.
