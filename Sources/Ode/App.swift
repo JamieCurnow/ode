@@ -237,7 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 // Without Accessibility, macOS silently drops our ⌘V. Hand the text over instead.
                 copy(output)
-                overlay.showError("Copied, press ⌘V to paste. Turn on Ode in Settings › Privacy & Security › Accessibility to paste automatically")
+                overlay.showError("Copied, press ⌘V to paste. To paste automatically, choose Ode menu › Open Accessibility Settings… and switch Ode on")
                 Log.error("Accessibility not granted, left dictation on the clipboard instead of pasting")
             }
         }
@@ -436,7 +436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openAccessibility() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+        Accessibility.requestAccess()
     }
 
     @objc private func openMicrophone() {
