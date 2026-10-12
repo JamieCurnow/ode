@@ -10,7 +10,7 @@ Speech is transcribed on-device, then cleaned up by **the Claude Code you alread
 curl -fsSL https://raw.githubusercontent.com/jamiecurnow/ode/main/install.sh | bash
 ```
 
-This installs to `~/Applications` and launches it. A setup window covers the microphone and accessibility permissions, your choice of key, and personalisation.
+This installs to `/Applications` (or `~/Applications` on a non-admin account) and launches it. A setup window covers the microphone and accessibility permissions, your choice of key, and personalisation.
 
 Or download `Ode.dmg` from [Releases](https://github.com/jamiecurnow/ode/releases/latest). It isn't notarised, so on first launch go to System Settings › Privacy & Security › **Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/Ode.app`.
 
@@ -58,7 +58,7 @@ A single SwiftPM executable with no dependencies.
 
 ```bash
 git clone https://github.com/jamiecurnow/ode && cd ode
-./scripts/build.sh --install    # build, sign, install to ~/Applications, launch
+./scripts/build.sh --install    # build, sign, install to /Applications, launch
 ```
 
 Builds are signed with your Apple Development certificate if you have one, so permissions persist across rebuilds. Otherwise they're ad-hoc signed.

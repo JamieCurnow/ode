@@ -2,7 +2,7 @@
 # Builds Ode.app into build/.
 #
 #   ./scripts/build.sh            build + sign
-#   ./scripts/build.sh --install  ...then copy to ~/Applications and launch
+#   ./scripts/build.sh --install  ...then copy to /Applications (or ~/Applications) and launch
 #   ./scripts/build.sh --dist     ...then package build/Ode.zip and build/Ode.dmg (what CI ships)
 #
 # Signing: uses your "Apple Development" certificate if you have one, so macOS keeps the Microphone
@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 APP_NAME="Ode"
 APP="build/$APP_NAME.app"
-INSTALL_DIR="$HOME/Applications"
+if [[ -w /Applications ]]; then INSTALL_DIR="/Applications"; else INSTALL_DIR="$HOME/Applications"; fi
 IDENTITY="${CODESIGN_IDENTITY-$(security find-identity -v -p codesigning 2>/dev/null | grep -m1 "Apple Development" | sed -E 's/.*"(.*)"/\1/' || true)}"
 
 swift build -c release --arch arm64
@@ -41,6 +41,7 @@ case "${1:-}" in
     mkdir -p "$INSTALL_DIR"
     pkill -x "$APP_NAME" 2>/dev/null && sleep 1 || true
     rm -rf "$INSTALL_DIR/$APP_NAME.app"
+    [[ "$INSTALL_DIR" == "/Applications" ]] && rm -rf "$HOME/Applications/$APP_NAME.app"
     cp -R "$APP" "$INSTALL_DIR/"
     echo "Installed to $INSTALL_DIR/$APP_NAME.app"
     open "$INSTALL_DIR/$APP_NAME.app"

@@ -1,12 +1,13 @@
 #!/bin/bash
 # Ode installer: curl -fsSL https://raw.githubusercontent.com/jamiecurnow/ode/main/install.sh | bash
 #
-# Downloads the latest release into ~/Applications and launches it. Files fetched with curl aren't
-# quarantined, so there's no "unidentified developer" dance with Gatekeeper.
+# Downloads the latest release into /Applications (or ~/Applications if you can't write there, e.g.
+# a non-admin account) and launches it. Files fetched with curl aren't quarantined, so there's no
+# "unidentified developer" dance with Gatekeeper.
 set -euo pipefail
 
 REPO="jamiecurnow/ode"
-DEST="$HOME/Applications"
+if [[ -w /Applications ]]; then DEST="/Applications"; else DEST="$HOME/Applications"; fi
 bold() { printf "\033[1m%s\033[0m\n" "$1"; }
 
 [[ "$(uname)" == "Darwin" ]] || { echo "Ode is a macOS app."; exit 1; }
@@ -23,6 +24,8 @@ ditto -x -k "$TMP/Ode.zip" "$TMP"
 mkdir -p "$DEST"
 pkill -x Ode 2>/dev/null && sleep 1 || true
 rm -rf "$DEST/Ode.app"
+# Older installers used ~/Applications; don't leave a stale second copy behind.
+[[ "$DEST" == "/Applications" ]] && rm -rf "$HOME/Applications/Ode.app"
 mv "$TMP/Ode.app" "$DEST/"
 xattr -dr com.apple.quarantine "$DEST/Ode.app" 2>/dev/null || true
 
