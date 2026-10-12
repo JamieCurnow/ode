@@ -123,6 +123,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // First run: the setup screen walks through permissions instead of firing system prompts at launch.
         let firstRun = !defaults.bool(forKey: "setupComplete")
         watchPermissions(prompt: !firstRun)
+        // Relaunched by Accessibility.requestAccess(): setup doesn't prompt at launch, so ask here.
+        if Accessibility.consumeAskOnLaunch() && firstRun { Accessibility.ask() }
         hotkeys.start()
         if firstRun { showSetup() }
         if cleanupEnabled { cleaner.start() }
