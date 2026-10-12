@@ -64,7 +64,8 @@ enum Main {
             try? await Task.sleep(for: .seconds(4))
             for line in lines {
                 let start = Date()
-                let out = await cleaner.clean(line, appName: appName, bundleID: nil) ?? "<nil: fell back to raw>"
+                let out = await cleaner.clean(line, appName: appName, bundleID: nil).map(StyleGuide.applyNameFixes)
+                    ?? "<nil: fell back to raw> " + StyleGuide.applyNameFixes(line)
                 print(String(format: "[%4dms] %@\n         → %@", Int(Date().timeIntervalSince(start) * 1000), line, out))
                 try? await Task.sleep(for: .seconds(3))
             }
@@ -227,6 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 cleanMs = ms(since: cleanStart)
             }
+            output = StyleGuide.applyNameFixes(output)
             lastCleaned = output
             overlay.hide()
 

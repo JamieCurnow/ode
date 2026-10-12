@@ -47,6 +47,7 @@ hold ⌥ → 🎤 on-device transcription (live preview) → 🧠 claude -p (Hai
 - **Cleanup** sends the transcript text to Claude Haiku 5.5 (pinned, so it does not follow your CLI's `haiku` alias) through your local `claude` CLI. One idle `claude -p` process (stream-json, no tools or MCP, thinking off) is always kept ready, which brings cleanup to about 0.7s instead of a 2-4s cold start. Each dictation uses a fresh process, and each one is a small request against your plan's usage limits.
 - **Style:** cleanup follows `~/Library/Application Support/Ode/style.md`. It removes filler, applies spoken corrections and matches how you write. It never answers or rewrites what you said.
 - **Vocabulary:** the style guide's Vocabulary list biases speech recognition and helps Claude fix misheard names.
+- **Names:** lines like `Siobhan: Shivon, Chevonne` under the style guide's Names section are swapped in code after cleanup, in every app. Misheard names are the one thing Haiku can't fix reliably on its own.
 - **App-aware:** Slack gets `:shortcodes:`, mail and docs get full sentences, everything else is casual.
 - **Clipboard:** pastes with ⌘V, then restores the full previous clipboard. The temporary text is marked transient so clipboard managers skip it.
 - **Fallbacks:** if Claude is slow or fails, the raw transcript is pasted. If Ode can't paste, the text is left on the clipboard.

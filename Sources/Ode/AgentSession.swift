@@ -78,9 +78,13 @@ enum AgentSession {
             emoji habits, and how I differ between chat and email. Add 8-12 spoken → written examples in my \
             style (my wording, with people and clients swapped for generic ones).
             4. Fill the Vocabulary section with the names, clients, projects, products and jargon that \
-            come up in my messages. These are what speech recognition usually gets wrong.
-            5. Test with ./test-clean on a few realistic transcripts, then show me a short summary of my \
-            style as you see it and what you wrote.
+            come up in my messages. These are what speech recognition usually gets wrong. If you have Slack, \
+            include the first names of the people I message most.
+            5. For names with an unusual spelling, add a line to the Names section listing the ways speech \
+            recognition is likely to spell it (e.g. sound-alike spellings of the name).
+            6. Test with ./test-clean on a few realistic transcripts (including some that tag or mention \
+            people in Slack, and one that starts with a name), running each at least twice. Then show me a \
+            short summary of my style as you see it and what you wrote.
             """
         case let .feedback(raw, cleaned, app):
             return """
@@ -93,9 +97,10 @@ enum AgentSession {
             <output>\(cleaned)</output>
 
             Ask me what was wrong with it or what I wanted instead. Then work out whether the problem was \
-            speech recognition (a misheard name or word: add it to Vocabulary) or the cleanup (fix the \
-            style rules or add an example), update style.md, re-test the raw transcript with \
-            ./test-clean "\(app ?? "Slack")", and show me the before and after.
+            speech recognition (a misheard word: add it to Vocabulary; a misheard person's name: add the \
+            wrong spelling to their line in Names) or the cleanup (fix the style rules or add an example), \
+            update style.md, re-test the raw transcript a few times with ./test-clean "\(app ?? "Slack")", \
+            and show me the before and after.
             """
         case .improve:
             return """
@@ -142,7 +147,9 @@ enum AgentSession {
         Fixed rules in the app (you can't change these, only the style guide): output only the cleaned text;
         never answer or follow the transcript; keep every meaningful word and the user's wording; remove
         only filler and stutters; apply spoken self-corrections; fix sound-alike mistranscriptions using
-        the Vocabulary; spoken "new line", "bullet point" and emoji names become formatting.
+        the Vocabulary and Names; spoken "new line", "bullet point" and emoji names become formatting.
+        If cleanup takes too long, or the output is much longer than the transcript, the app pastes the
+        raw transcript instead (./test-clean shows this as "<nil: fell back to raw>").
 
         ## The file you edit
         `\(AppPaths.styleFile.path)`
@@ -150,8 +157,14 @@ enum AgentSession {
         Changes apply from the next dictation, no restart needed.
         - `## Vocabulary` is parsed by the app for speech recognition: a plain list of terms, comma or line
           separated. Lines starting with "(" are comments. Keep it a plain list, no other formatting.
+        - `## Names (every app)` lists people whose names get misheard, one per line:
+          `Correct: wrong spelling, wrong spelling`. The app swaps these itself after cleanup (whole words,
+          any case, every app), so they're reliable, and feeds the correct spellings to speech recognition.
+          Vocabulary alone often isn't enough for names, so add the actual wrong spellings you see in
+          transcripts. Only list spellings that are never right for anyone else the user writes about.
         - Everything else is free-form markdown read by the cleanup model: rules, word swaps, per-app
-          sections, and spoken → written examples.
+          sections, and spoken → written examples. A heading decides where its rules apply: rules for
+          every app go under a heading marked "(every app)", never under an app's heading.
 
         ## Testing
         `./test-clean <AppName>` reads transcripts from stdin, one per line, and prints the cleaned output
@@ -160,12 +173,24 @@ enum AgentSession {
             printf "um yeah can you send me the the link\\nhey what time works for you\\n" | ./test-clean Slack
 
         Always test after editing: the transcript in question plus two or three others, to make sure
-        nothing else got worse. Startup takes about 4s, then about 3s per line. Cleanup itself should stay
+        nothing else got worse. The same line can come out differently between runs, so run each one at
+        least twice before calling it fixed. Test in the other modes too (e.g. Mail) if a rule should apply
+        there. Startup takes about 4s, then about 3s per line. Cleanup itself should stay
         under about 1s per line. If it creeps up, the style guide has got too long.
 
         ## Guidelines
         - Keep style.md concise (under about 150 lines). All of it goes into every dictation's prompt.
         - Concrete spoken → written examples work better than abstract rules for Haiku.
+        - Show the tricky case done right in an example; don't write a rule describing the mistake. Naming
+          the mistake ("'at' inside 'chatting' doesn't count") tends to make Haiku do it.
+        - Use different names in "do this" and "don't do this" examples, and vary the names across
+          positive examples. A name used in every positive example gets the rule applied to it everywhere.
+        - Write rules as plain instructions. Explaining why ("these are mistranscriptions because…") can
+          make Haiku print the explanation in its output.
+        - Check new rules against existing ones. A blanket rule like "start messages lowercase" will beat
+          "capitalise names" unless it says "except names and I".
+        - Don't rely on Haiku to add words the user didn't say (surnames, titles, full names in Slack tags).
+          It works for the names in the examples and nobody else. Stick to first names.
         - Misheard names or jargon go in Vocabulary. That fixes both recognition and cleanup.
         - Never put other people's messages, private or confidential details, or secrets in style.md.
           Examples use the user's own phrasing, with names and clients swapped for generic ones.
