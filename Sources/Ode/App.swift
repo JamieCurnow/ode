@@ -52,27 +52,87 @@ enum Main {
         app.run()
     }
 
-    /// `Ode --test-clean [app name]`: cleans each stdin line through the warm-process
-    /// pipeline and prints timings, for tuning the style guide without dictating.
+    /// `Ode --test-clean [app name] [--runs N]`: cleans each stdin line through the warm-process
+    /// pipeline and prints timings, for tuning the style guide without dictating. With `--runs`, each
+    /// line is cleaned N times and lines whose output varies are flagged.
+    /// `Ode --test-clean --suite [--runs N]`: runs the saved cases in tests.txt and reports pass/fail.
     private static func runCleanupTest() {
-        let args = CommandLine.arguments
-        let appName = args.firstIndex(of: "--test-clean").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil } ?? "Slack"
-        let lines = AnyIterator { readLine() }.filter { !$0.isEmpty }
+        var args = Array(CommandLine.arguments.drop { $0 != "--test-clean" }.dropFirst())
+        var runs = 1
+        if let i = args.firstIndex(of: "--runs"), args.indices.contains(i + 1) {
+            runs = max(1, Int(args[i + 1]) ?? 1)
+            args.removeSubrange(i...(i + 1))
+        }
+        let suite = args.contains("--suite")
+        let appName = args.first { !$0.hasPrefix("--") } ?? "Slack"
+
+        let cases: [TestCase]
+        if suite {
+            cases = TestCase.load()
+            if cases.isEmpty {
+                print("No test cases yet. Add lines to \(AppPaths.testsFile.path) as: App | spoken | expected")
+                exit(0)
+            }
+        } else {
+            cases = AnyIterator { readLine() }.filter { !$0.isEmpty }.map { TestCase(app: appName, spoken: $0, expected: nil) }
+        }
+
         Task { @MainActor in
             let cleaner = ClaudeCleaner()
             cleaner.start()
             try? await Task.sleep(for: .seconds(4))
-            for line in lines {
-                let start = Date()
-                let out = await cleaner.clean(line, appName: appName, bundleID: nil).map(StyleGuide.applyNameFixes)
-                    ?? "<nil: fell back to raw> " + StyleGuide.applyNameFixes(line)
-                print(String(format: "[%4dms] %@\n         → %@", Int(Date().timeIntervalSince(start) * 1000), line, out))
-                try? await Task.sleep(for: .seconds(3))
+            var failed = 0, varied = 0
+            for test in cases {
+                var outputs: [String] = []
+                for _ in 0..<runs {
+                    let start = Date()
+                    let cleaned = await cleaner.clean(test.spoken, appName: test.app, bundleID: nil)
+                    let out = StyleGuide.finish(cleaned ?? test.spoken, appName: test.app, bundleID: nil)
+                    outputs.append(out)
+                    let fallback = cleaned == nil ? "<fell back to raw: \(cleaner.lastFallbackReason ?? "unknown")> " : ""
+                    let label = outputs.count == 1 ? "[\(test.app)] \(test.spoken)" : "  (run \(outputs.count))"
+                    print(String(format: "[%4dms] %@\n         → %@", Int(Date().timeIntervalSince(start) * 1000), label, fallback + out))
+                    try? await Task.sleep(for: .seconds(3))
+                }
+                if Set(outputs).count > 1 {
+                    varied += 1
+                    print("         ⚠︎ VARIES between runs")
+                }
+                if let expected = test.expected {
+                    let misses = outputs.filter { $0 != expected }.count
+                    if misses == 0 {
+                        print("         ✓ PASS")
+                    } else {
+                        failed += 1
+                        print("         ✗ FAIL (\(misses)/\(runs) runs), expected: \(expected)")
+                    }
+                }
+                print("")
             }
+            if suite { print("\(cases.count - failed)/\(cases.count) passed") }
+            if runs > 1 { print("\(varied) of \(cases.count) lines varied across \(runs) runs") }
             cleaner.stop()
-            exit(0)
+            exit(suite && failed > 0 ? 1 : 0)
         }
         RunLoop.main.run()
+    }
+}
+
+/// One saved regression case from tests.txt: `App | spoken | expected`.
+struct TestCase {
+    let app: String
+    let spoken: String
+    let expected: String?
+
+    static func load() -> [TestCase] {
+        guard let text = try? String(contentsOf: AppPaths.testsFile, encoding: .utf8) else { return [] }
+        return text.components(separatedBy: .newlines).compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
+            let parts = trimmed.components(separatedBy: " | ")
+            guard parts.count == 3 else { return nil }
+            return TestCase(app: parts[0], spoken: parts[1], expected: parts[2])
+        }
     }
 }
 
@@ -216,6 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             var output = raw
             var cleanMs = 0
+            var fallbackReason: String?
             if cleanupEnabled {
                 overlay.set(.cleaning)
                 let cleanStart = Date()
@@ -225,10 +286,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     bundleID: targetApp?.bundleIdentifier
                 ) {
                     output = cleaned
+                } else {
+                    fallbackReason = cleaner.lastFallbackReason ?? "cleanup failed"
                 }
                 cleanMs = ms(since: cleanStart)
             }
-            output = StyleGuide.applyNameFixes(output)
+            output = StyleGuide.finish(output, appName: targetApp?.localizedName, bundleID: targetApp?.bundleIdentifier)
             lastCleaned = output
             overlay.hide()
 
@@ -238,6 +301,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard !output.isEmpty else { return }
             if AXIsProcessTrusted() {
                 await Paster.paste(output)
+                // So a rough paste isn't mistaken for the style guide not working.
+                if let fallbackReason { overlay.showNotice("Pasted as heard, without cleanup (\(fallbackReason))") }
             } else {
                 // Without Accessibility, macOS silently drops our ⌘V. Hand the text over instead.
                 copy(output)

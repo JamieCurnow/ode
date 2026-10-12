@@ -17,6 +17,9 @@ enum AppPaths {
 
     static let styleFile = supportDir.appendingPathComponent("style.md")
 
+    /// Saved transcript → expected output cases, run with `Ode --test-clean --suite`.
+    static let testsFile = supportDir.appendingPathComponent("tests.txt")
+
     static let logFile: URL = {
         let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Logs", isDirectory: true)
@@ -42,7 +45,37 @@ enum StyleGuide {
             $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         }
         var seen = Set(terms)
-        return terms + nameFixes().map(\.correct).filter { seen.insert($0).inserted }
+        let names = nameFixes().map(\.correct) + slackNames().map(\.spoken)
+        return terms + names.filter { seen.insert($0).inserted }
+    }
+
+    /// Everything Ode does to the text after cleanup (or to the raw transcript if cleanup fell back).
+    static func finish(_ text: String, appName: String?, bundleID: String?) -> String {
+        let fixed = applyNameFixes(text)
+        return ClaudeCleaner.isSlack(appName: appName, bundleID: bundleID) ? applySlackTags(fixed) : fixed
+    }
+
+    /// "First: Slack Display Name" lines under "## Slack names".
+    static func slackNames() -> [(spoken: String, display: String)] {
+        sectionLines("slack names").compactMap { line in
+            let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+            return (spoken: parts[0], display: parts[1].hasPrefix("@") ? String(parts[1].dropFirst()) : parts[1])
+        }
+    }
+
+    /// Expands first-name tags to the person's Slack display name ("@Priya" → "@Priya Shah"). Done in code
+    /// because Haiku won't reliably add words the user didn't say, so it only tags first names.
+    static func applySlackTags(_ text: String) -> String {
+        slackNames().reduce(text) { text, person in
+            var pattern = "@" + NSRegularExpression.escapedPattern(for: person.spoken) + "\\b"
+            // Leave it alone if the rest of the display name is already there ("@Priya Shah").
+            if person.display.lowercased().hasPrefix(person.spoken.lowercased() + " ") {
+                let rest = person.display.dropFirst(person.spoken.count + 1)
+                pattern += "(?!\\s+" + NSRegularExpression.escapedPattern(for: String(rest)) + "\\b)"
+            }
+            return replace(pattern, in: text, with: "@" + person.display)
+        }
     }
 
     /// "Correct: wrong, wrong" lines under "## Names". Applied in code after cleanup, because Haiku
@@ -62,23 +95,28 @@ enum StyleGuide {
     static func applyNameFixes(_ text: String) -> String {
         // Longest first, so "Kathrine Ann" wins over "Kathrine".
         nameFixes().sorted { $0.wrong.count > $1.wrong.count }.reduce(text) { text, fix in
-            let pattern = "\\b" + NSRegularExpression.escapedPattern(for: fix.wrong) + "\\b"
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return text }
-            return regex.stringByReplacingMatches(
-                in: text, range: NSRange(text.startIndex..., in: text),
-                withTemplate: NSRegularExpression.escapedTemplate(for: fix.correct)
-            )
+            replace("\\b" + NSRegularExpression.escapedPattern(for: fix.wrong) + "\\b", in: text, with: fix.correct)
         }
     }
 
-    /// Non-empty, non-comment lines under the "## " heading containing `heading`, minus any "- " bullet.
+    /// Case-insensitive regex replace with a literal replacement.
+    private static func replace(_ pattern: String, in text: String, with replacement: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return text }
+        return regex.stringByReplacingMatches(
+            in: text, range: NSRange(text.startIndex..., in: text),
+            withTemplate: NSRegularExpression.escapedTemplate(for: replacement)
+        )
+    }
+
+    /// Non-empty, non-comment lines under the "## " heading starting with `heading` (so "names" matches
+    /// "## Names (every app)" but not "## Slack names"), minus any "- " bullet.
     private static func sectionLines(_ heading: String) -> [String] {
         guard let style = try? String(contentsOf: AppPaths.styleFile, encoding: .utf8) else { return [] }
         var inSection = false
         var lines: [String] = []
         for line in style.components(separatedBy: .newlines) {
             if line.hasPrefix("## ") {
-                inSection = line.lowercased().contains(heading)
+                inSection = line.dropFirst(3).trimmingCharacters(in: .whitespaces).lowercased().hasPrefix(heading)
                 continue
             }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -156,6 +194,10 @@ enum StyleGuide {
 
     ## Slack
     - When the word "at" comes right before someone's name, it's a tag: write @ and their first name.
+
+    ## Slack names
+    (Who "@First" tags in Slack. One per line: their first name, a colon, then their Slack display name. \
+    Ode swaps these automatically, so "@Priya" becomes "@Priya Shah". Personalise fills this in from Slack.)
 
     ## Email and docs (Mail, Outlook, Gmail/Docs in a browser, Notion, Word)
     - Normal capitalisation and full sentences. Friendly and plain, never corporate.

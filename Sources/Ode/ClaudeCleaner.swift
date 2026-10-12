@@ -11,6 +11,8 @@ final class ClaudeCleaner {
     /// everyone regardless of what the user's claude CLI maps the alias to.
     var model = "claude-haiku-5-5"
     var timeout: Duration = .milliseconds(2500)
+    /// Why the last `clean` returned nil, in words for the overlay. Nil after a successful cleanup.
+    private(set) var lastFallbackReason: String?
 
     private var warm: ClaudeProcess?
     private var lastSpawnFailure: Date?
@@ -42,9 +44,13 @@ final class ClaudeCleaner {
 
     /// Returns the cleaned text, or nil if Claude failed or took longer than `timeout`.
     func clean(_ transcript: String, appName: String?, bundleID: String?) async -> String? {
+        lastFallbackReason = nil
         if warm?.isStale(styleStamp: StyleGuide.modificationDate) == true { respawn() }
         ensureWarm()
-        guard let proc = warm else { return nil }
+        guard let proc = warm else {
+            lastFallbackReason = "Claude isn't running"
+            return nil
+        }
         warm = nil
 
         let content = """
@@ -63,8 +69,13 @@ final class ClaudeCleaner {
                 proc.terminate()
             }
         }
+        let sentAt = Date()
         let result = await proc.send(content)
         timeoutTask.cancel()
+        if result == nil {
+            let limit = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+            lastFallbackReason = Date().timeIntervalSince(sentAt) >= limit - 0.05 ? "cleanup took too long" : "Claude stopped unexpectedly"
+        }
         proc.terminate()
 
         // Boot the next one now so it's ready for the following dictation.
@@ -79,18 +90,23 @@ final class ClaudeCleaner {
         // transcript instead of cleaning it, so fall back to the raw text.
         if text.count > transcript.count * 3 / 2 + 20 {
             Log.info("Cleanup output too long (\(text.count) vs \(transcript.count) chars), using raw transcript")
+            lastFallbackReason = "Claude replied instead of cleaning up"
             return nil
         }
         return text
     }
 
     /// Spell out which style-guide section applies, rather than leaving Haiku to infer it from the app name.
+    nonisolated static func isSlack(appName: String?, bundleID: String?) -> Bool {
+        (bundleID ?? "").lowercased().contains("slack") || (appName ?? "").lowercased().contains("slack")
+    }
+
     static func modeHint(appName: String?, bundleID: String?) -> String {
         let id = (bundleID ?? "").lowercased()
         let name = (appName ?? "").lowercased()
         func matches(_ keys: [String]) -> Bool { keys.contains { id.contains($0) || name.contains($0) } }
 
-        if matches(["slack"]) {
+        if isSlack(appName: appName, bundleID: bundleID) {
             return "Mode: casual. This is Slack, so write any emoji as Slack shortcodes (e.g. :ok_hand:), never as unicode emoji."
         }
         if matches(["com.apple.mail", "outlook", "notion", "microsoft.word", "iwork.pages", "superhuman", "spark", "mimestream"])

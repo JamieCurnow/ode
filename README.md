@@ -48,9 +48,10 @@ hold ⌥ → 🎤 on-device transcription (live preview) → 🧠 claude -p (Hai
 - **Style:** cleanup follows `~/Library/Application Support/Ode/style.md`. It removes filler, applies spoken corrections and matches how you write. It never answers or rewrites what you said.
 - **Vocabulary:** the style guide's Vocabulary list biases speech recognition and helps Claude fix misheard names.
 - **Names:** lines like `Siobhan: Shivon, Chevonne` under the style guide's Names section are swapped in code after cleanup, in every app. Misheard names are the one thing Haiku can't fix reliably on its own.
+- **Slack tags:** say "at Priya" in Slack and it becomes `@Priya`. Add `Priya: Priya Shah` under Slack names (Personalise fills these in from Slack) and Ode expands it to `@Priya Shah`.
 - **App-aware:** Slack gets `:shortcodes:`, mail and docs get full sentences, everything else is casual.
 - **Clipboard:** pastes with ⌘V, then restores the full previous clipboard. The temporary text is marked transient so clipboard managers skip it.
-- **Fallbacks:** if Claude is slow or fails, the raw transcript is pasted. If Ode can't paste, the text is left on the clipboard.
+- **Fallbacks:** if Claude is slow or fails, the raw transcript is pasted and a short notice says why. If Ode can't paste, the text is left on the clipboard.
 - **Privacy:** only the transcript text leaves your Mac, through your own Claude Code. The log (`~/Library/Logs/Ode.log`) records timings, not text.
 
 ## 🛠️ Development
@@ -68,6 +69,8 @@ Test modes:
 
 ```bash
 echo "um send me the the link" | build/Ode.app/Contents/MacOS/Ode --test-clean Slack   # cleanup + timings
+echo "at Priya you around" | build/Ode.app/Contents/MacOS/Ode --test-clean Slack --runs 3   # flag lines that vary
+build/Ode.app/Contents/MacOS/Ode --test-clean --suite                                 # saved cases in tests.txt
 build/Ode.app/Contents/MacOS/Ode --test-transcribe file.aiff                          # transcription ± vocabulary
 build/Ode.app/Contents/MacOS/Ode --test-overlay /tmp                                  # render overlay PNGs
 ```
