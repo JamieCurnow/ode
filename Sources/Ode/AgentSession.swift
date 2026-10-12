@@ -78,13 +78,16 @@ enum AgentSession {
             emoji habits, and how I differ between chat and email. Add 8-12 spoken → written examples in my \
             style (my wording, with people and clients swapped for generic ones).
             4. Fill the Vocabulary section with the names, clients, projects, products and jargon that \
-            come up in my messages. These are what speech recognition usually gets wrong. If you have Slack, \
-            include the first names of the people I message most.
-            5. For names with an unusual spelling, add a line to the Names section listing the ways speech \
+            come up in my messages. These are what speech recognition usually gets wrong.
+            5. If you have Slack, look up the people I talk to most (up to about 50) and fill the Slack names \
+            section with each one's first name and their exact Slack display name, so "@Priya" can become \
+            "@Priya Shah". If two of them share a first name, keep the one I talk to more and tell me \
+            about the other.
+            6. For names with an unusual spelling, add a line to the Names section listing the ways speech \
             recognition is likely to spell it (e.g. sound-alike spellings of the name).
-            6. Test with ./test-clean on a few realistic transcripts (including some that tag or mention \
-            people in Slack, and one that starts with a name), running each at least twice. Then show me a \
-            short summary of my style as you see it and what you wrote.
+            7. Test with ./test-clean --runs 2 on a few realistic transcripts (including some that tag or \
+            mention people in Slack, and one that starts with a name). Save the good ones to tests.txt as \
+            regression cases. Then show me a short summary of my style as you see it and what you wrote.
             """
         case let .feedback(raw, cleaned, app):
             return """
@@ -99,14 +102,16 @@ enum AgentSession {
             Ask me what was wrong with it or what I wanted instead. Then work out whether the problem was \
             speech recognition (a misheard word: add it to Vocabulary; a misheard person's name: add the \
             wrong spelling to their line in Names) or the cleanup (fix the style rules or add an example), \
-            update style.md, re-test the raw transcript a few times with ./test-clean "\(app ?? "Slack")", \
-            and show me the before and after.
+            update style.md, re-test the raw transcript with ./test-clean "\(app ?? "Slack")" --runs 3, \
+            add it to tests.txt with the output I wanted, run ./test-clean --suite to check nothing else \
+            broke, and show me the before and after.
             """
         case .improve:
             return """
             I want to improve how Ode writes for me. Have a quick look at my current style.md, \
             then ask me what I'd like to change (tone, words, emoji, names it gets wrong, how it behaves in \
-            a particular app…). Make the changes, test them with ./test-clean, and summarise what changed.
+            a particular app…). Make the changes, test them with ./test-clean, save new cases to tests.txt, \
+            run ./test-clean --suite, and summarise what changed.
             """
         }
     }
@@ -118,15 +123,28 @@ enum AgentSession {
         let helper = agentDir.appendingPathComponent("test-clean")
         let helperBody = """
         #!/bin/bash
-        # Usage: echo "raw transcript" | ./test-clean [AppName]   (one transcript per line)
-        exec \(shellQuote(executable)) --test-clean "${1:-Slack}"
+        # Usage: echo "raw transcript" | ./test-clean [AppName] [--runs N]   (one transcript per line)
+        #        ./test-clean --suite [--runs N]   (saved cases in tests.txt)
+        exec \(shellQuote(executable)) --test-clean "$@"
         """
         try? helperBody.write(to: helper, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
 
+        if !FileManager.default.fileExists(atPath: AppPaths.testsFile.path) {
+            try? testsTemplate.write(to: AppPaths.testsFile, atomically: true, encoding: .utf8)
+        }
+
         let claudeMd = agentDir.appendingPathComponent("CLAUDE.md")
         try? workspaceGuide.write(to: claudeMd, atomically: true, encoding: .utf8)
     }
+
+    private static let testsTemplate = """
+    # Ode regression tests: one case per line, as  App | spoken | expected
+    # Run with ./test-clean --suite (add --runs 2 to catch flaky ones). Lines starting with # are ignored.
+    # Example:
+    # Slack | um yeah can you send me the the link | yeah can you send me the link?
+
+    """
 
     private static var workspaceGuide: String {
         """
@@ -162,6 +180,9 @@ enum AgentSession {
           any case, every app), so they're reliable, and feeds the correct spellings to speech recognition.
           Vocabulary alone often isn't enough for names, so add the actual wrong spellings you see in
           transcripts. Only list spellings that are never right for anyone else the user writes about.
+        - `## Slack names` maps first names to Slack display names, one per line: `Priya: Priya Shah`.
+          In Slack the app turns "@Priya" into "@Priya Shah" after cleanup, so the style guide only needs
+          Haiku to tag first names. Use the display name exactly as Slack shows it.
         - Everything else is free-form markdown read by the cleanup model: rules, word swaps, per-app
           sections, and spoken → written examples. A heading decides where its rules apply: rules for
           every app go under a heading marked "(every app)", never under an app's heading.
@@ -172,10 +193,19 @@ enum AgentSession {
 
             printf "um yeah can you send me the the link\\nhey what time works for you\\n" | ./test-clean Slack
 
-        Always test after editing: the transcript in question plus two or three others, to make sure
-        nothing else got worse. The same line can come out differently between runs, so run each one at
-        least twice before calling it fixed. Test in the other modes too (e.g. Mail) if a rule should apply
-        there. Startup takes about 4s, then about 3s per line. Cleanup itself should stay
+        Always test after editing: the transcript in question plus two or three others.
+        Add `--runs N` to clean each line N times. The same line can come out differently between runs,
+        and lines that do are flagged "VARIES", so use at least `--runs 2` before calling anything fixed.
+        Test in the other modes too (e.g. Mail) if a rule should apply there. Output shown is the final
+        pasted text, after the app's name swaps and Slack tags.
+
+        ## Regression tests
+        `\(AppPaths.testsFile.path)` holds saved cases, one per line: `App | spoken | expected`.
+        `./test-clean --suite` runs them all and reports pass/fail (add `--runs 2` to catch flaky ones).
+        - When you fix something, add the case with the output the user wanted.
+        - Run the suite after every style.md change, and before finishing. Don't finish with new failures
+          without telling the user.
+        - The suite is slow (about 3s per case per run), so keep it to the cases that matter, about 30 max. Startup takes about 4s, then about 3s per line. Cleanup itself should stay
         under about 1s per line. If it creeps up, the style guide has got too long.
 
         ## Guidelines

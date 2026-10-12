@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor
 @Observable
 final class OverlayModel {
-    enum Phase { case listening, cleaning, error }
+    enum Phase { case listening, cleaning, error, notice }
     var phase: Phase = .listening
     var text = ""
 }
@@ -55,10 +55,19 @@ final class OverlayController {
     }
 
     func showError(_ message: String) {
-        show(.error, text: message)
+        flash(.error, message, for: 3)
+    }
+
+    /// A quieter heads-up that hides itself, e.g. when a dictation was pasted without cleanup.
+    func showNotice(_ message: String) {
+        flash(.notice, message, for: 2.5)
+    }
+
+    private func flash(_ phase: OverlayModel.Phase, _ message: String, for seconds: Double) {
+        show(phase, text: message)
         let work = DispatchWorkItem { [weak self] in self?.hide() }
         hideWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
     func hide() {
@@ -150,6 +159,9 @@ struct OverlayView: View {
         case .error:
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.yellow)
+        case .notice:
+            Image(systemName: "text.badge.xmark")
+                .foregroundStyle(.secondary)
         }
     }
 }
