@@ -52,6 +52,7 @@ hold ⌥ → 🎤 on-device transcription (live preview) → 🧠 claude -p (Hai
 - **App-aware:** Slack gets `:shortcodes:`, mail and docs get full sentences, everything else is casual.
 - **Clipboard:** pastes with ⌘V, then restores the full previous clipboard. The temporary text is marked transient so clipboard managers skip it.
 - **Fallbacks:** if Claude is slow or fails, the raw transcript is pasted and a short notice says why. If Ode can't paste, the text is left on the clipboard.
+- **Sleep and stalls:** the mic and speech recogniser are rebuilt whenever your Mac wakes. If either gets stuck mid-dictation, Ode resets it after 10 seconds instead of ignoring the key until you restart it.
 - **Privacy:** only the transcript text leaves your Mac, through your own Claude Code. The log (`~/Library/Logs/Ode.log`) records timings, not text.
 
 ## 🛠️ Development

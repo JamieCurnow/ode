@@ -17,6 +17,8 @@ final class Transcriber {
     private var volatileText = ""
 
     private(set) var isRunning = false
+    /// Set once this transcriber has been given up on, see `abandon()`.
+    private var abandoned = false
 
     var transcript: String {
         (finalText + volatileText).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -50,7 +52,7 @@ final class Transcriber {
     }
 
     func start() async throws {
-        guard !isRunning else { return }
+        guard !isRunning, !abandoned else { return }
         if locale == nil { try await prepare() }
         guard let locale else { throw OdeError.unsupportedLocale }
 
@@ -99,6 +101,14 @@ final class Transcriber {
         }
 
         try await analyzer.start(inputSequence: stream)
+
+        // Given up on while starting (the start stalled and Ode moved on): don't turn the mic on.
+        guard !abandoned else {
+            continuation.finish()
+            resultsTask?.cancel()
+            await analyzer.cancelAndFinishNow()
+            throw OdeError.abandoned
+        }
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: micFormat) { buffer, _ in
             let ratio = analyzerFormat.sampleRate / micFormat.sampleRate
@@ -186,16 +196,25 @@ final class Transcriber {
         resultsTask = nil
         Task { await analyzer?.cancelAndFinishNow() }
     }
+
+    /// Give up on this transcriber for good, e.g. when it stalled or the Mac slept, so a fresh one can
+    /// take over. Safe at any point: a start() still in flight bails out instead of turning the mic on.
+    func abandon() {
+        abandoned = true
+        onUpdate = nil
+        cancel()
+    }
 }
 
 enum OdeError: LocalizedError {
-    case unsupportedLocale, audioFormat, claudeNotFound
+    case unsupportedLocale, audioFormat, claudeNotFound, abandoned
 
     var errorDescription: String? {
         switch self {
         case .unsupportedLocale: "Your language isn't supported by macOS dictation"
         case .audioFormat: "Couldn't set up the microphone audio format"
         case .claudeNotFound: "Couldn't find the claude CLI"
+        case .abandoned: "Dictation was reset"
         }
     }
 }
