@@ -140,7 +140,9 @@ struct TestCase {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private enum State { case idle, listening, processing }
 
-    private let transcriber = Transcriber()
+    private var transcriber = Transcriber()
+    /// The Mac woke mid-dictation: rebuild the speech pipeline once that dictation is done.
+    private var resetPending = false
     private let cleaner = ClaudeCleaner()
     private let hotkeys = HotkeyMonitor()
     private let overlay = OverlayController()
@@ -171,10 +173,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setUpStatusItem()
         setUpEditMenu()
 
-        transcriber.onUpdate = { [weak self] text in
-            guard let self, self.state == .listening else { return }
-            if self.overlay.isVisible { self.overlay.update(text: text) }
-        }
+        wireTranscriber()
+        watchSleep()
 
         hotkeys.hotkey = hotkey
         hotkeys.onPress = { [weak self] in self?.hotkeyPressed() }
@@ -190,11 +190,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if firstRun { showSetup() }
         if cleanupEnabled { cleaner.start() }
 
+        prepareTranscriber()
+    }
+
+    private func wireTranscriber() {
+        transcriber.onUpdate = { [weak self] text in
+            guard let self, self.state == .listening else { return }
+            if self.overlay.isVisible { self.overlay.update(text: text) }
+        }
+    }
+
+    private func prepareTranscriber() {
+        let transcriber = self.transcriber
         Task {
             do { try await transcriber.prepare() } catch {
                 Log.error("Speech setup failed: \(error)")
                 overlay.showError("Speech setup failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    /// Swap in a fresh transcriber (new audio engine and speech analyzer). The old one may be stuck
+    /// in a system call that never returns, so it's abandoned rather than waited for.
+    private func resetTranscriber(_ reason: String) {
+        Log.info("Resetting speech pipeline: \(reason)")
+        transcriber.abandon()
+        transcriber = Transcriber()
+        startTask = nil
+        resetPending = false
+        wireTranscriber()
+        prepareTranscriber()
+    }
+
+    // MARK: - Sleep and wake
+
+    private func watchSleep() {
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.systemWillSleep() }
+        }
+        center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.systemDidWake() }
+        }
+    }
+
+    /// Closing the lid mid-dictation would leave the mic and analyzer to sleep mid-stream, so drop it.
+    private func systemWillSleep() {
+        guard state == .listening else { return }
+        Log.info("Mac going to sleep mid-dictation, cancelling it")
+        cancelDictation()
+    }
+
+    /// Audio devices and the speech service can change under us while asleep, so start fresh on wake.
+    private func systemDidWake() {
+        // Re-arm the key monitors too, which also forgets a key press that never saw its release.
+        hotkeys.start()
+        if state == .listening { cancelDictation() }
+        if state == .idle {
+            resetTranscriber("woke from sleep")
+        } else {
+            Log.info("Woke from sleep mid-dictation, will reset the speech pipeline after it")
+            resetPending = true
         }
     }
 
@@ -208,7 +264,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let maxDictation: TimeInterval = 5 * 60
 
     private func hotkeyPressed() {
-        guard state == .idle else { return }
+        guard state == .idle else {
+            Log.info("Hotkey pressed while the last dictation is still \(state), ignored")
+            return
+        }
 
         // Don't start the mic until it's allowed: the permission dialog steals focus mid-press.
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -250,23 +309,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         state = .processing
         let heldFor = Date().timeIntervalSince(pressedAt)
 
+        let start = startTask
+        let transcriber = self.transcriber
         Task {
             defer {
                 state = .idle
                 setStatusIcon(listening: false)
+                if resetPending { resetTranscriber("woke from sleep during the last dictation") }
             }
             do {
-                try await startTask?.value
+                guard try await withDeadline(stallLimit, { try await start?.value; return true }) != nil else {
+                    recoverFromStall("starting the mic")
+                    return
+                }
             } catch {
                 Log.error("Mic start failed: \(error)")
                 overlay.showError("Couldn't start the mic: \(error.localizedDescription)")
                 return
             }
             let releasedAt = Date()
-            let raw = await transcriber.stop()
+            guard let raw = try? await withDeadline(stallLimit, { await transcriber.stop() }) else {
+                recoverFromStall("finishing the transcript")
+                return
+            }
             let transcribeMs = ms(since: releasedAt)
 
             guard heldFor > 0.3, !raw.isEmpty else {
+                // Shorter taps are just ⌥ on its own, not dictation.
+                if heldFor > 0.3 { Log.info("Dictation: held \(String(format: "%.1f", heldFor))s, heard nothing") }
                 overlay.hide()
                 return
             }
@@ -318,10 +388,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setStatusIcon(listening: false)
         overlay.hide()
         let start = startTask
+        let transcriber = self.transcriber
         Task {
-            _ = try? await start?.value
+            // A start that failed has nothing to cancel, so only a start that never finishes counts here.
+            guard (try? await withDeadline(stallLimit, { _ = try? await start?.value; return true })) != nil else {
+                // Only reset if nothing has replaced it meanwhile (e.g. a wake reset).
+                if transcriber === self.transcriber { resetTranscriber("starting the mic stalled while cancelling") }
+                return
+            }
             transcriber.cancel()
         }
+    }
+
+    /// How long starting the mic or finishing a transcript may take before Ode treats it as stuck.
+    /// Both normally take well under a second.
+    private let stallLimit: TimeInterval = 10
+
+    /// A speech or audio call never returned. Without this, Ode would sit in that dictation forever
+    /// and ignore every later key press.
+    private func recoverFromStall(_ step: String) {
+        Log.error("Dictation stuck \(step) for \(Int(stallLimit))s")
+        overlay.showError("Dictation got stuck, so Ode reset it. Hold the key to try again")
+        resetTranscriber("stuck \(step)")
     }
 
     private func ms(since date: Date) -> Int { Int(Date().timeIntervalSince(date) * 1000) }
@@ -515,3 +603,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showLog() { NSWorkspace.shared.open(AppPaths.logFile) }
     @objc private func quit() { NSApp.terminate(nil) }
 }
+
+/// Runs `operation`, but gives up after `seconds` and returns nil without waiting for it to finish.
+/// A task group can't do this: it always waits for its children, and some system calls never return.
+@MainActor
+func withDeadline<T>(_ seconds: TimeInterval, _ operation: @escaping @MainActor () async throws -> T) async throws -> T? {
+    let once = DeadlineFlag()
+    return try await withCheckedThrowingContinuation { continuation in
+        Task { @MainActor in
+            do {
+                let value = try await operation()
+                if !once.done { once.done = true; continuation.resume(returning: value) }
+            } catch {
+                if !once.done { once.done = true; continuation.resume(throwing: error) }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            MainActor.assumeIsolated {
+                if !once.done { once.done = true; continuation.resume(returning: nil) }
+            }
+        }
+    }
+}
+
+private final class DeadlineFlag { var done = false }
