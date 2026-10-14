@@ -21,6 +21,38 @@ enum Main {
             }
             RunLoop.main.run()
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--test-transcribe-dir"), CommandLine.arguments.indices.contains(i + 1) {
+            // For bench/: every .wav in the folder, with and without vocabulary, as JSON lines on stdout.
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            let clips = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.pathExtension == "wav" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            Task { @MainActor in
+                let transcriber = Transcriber()
+                try? await transcriber.prepare()
+                for clip in clips {
+                    for vocab in [false, true] {
+                        let start = Date()
+                        let text = (try? await transcriber.transcribeFile(clip, useVocabulary: vocab)) ?? ""
+                        let row: [String: Any] = [
+                            "id": clip.deletingPathExtension().lastPathComponent,
+                            "engine": vocab ? "apple+vocab" : "apple",
+                            "text": text,
+                            "ms": Int(Date().timeIntervalSince(start) * 1000),
+                        ]
+                        if let data = try? JSONSerialization.data(withJSONObject: row) {
+                            print(String(decoding: data, as: UTF8.self))
+                        }
+                    }
+                }
+                exit(0)
+            }
+            RunLoop.main.run()
+        }
+        if CommandLine.arguments.contains("--print-vocabulary") {
+            StyleGuide.vocabulary().forEach { print($0) }
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--test-overlay"), CommandLine.arguments.indices.contains(i + 1) {
             // Renders the overlay pill with sample text to PNGs, for checking layout without dictating.
             let samples = [

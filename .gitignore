@@ -2,3 +2,8 @@
 build/
 .swiftpm/
 .DS_Store
+bench/clips/
+bench/results/
+bench/.build/
+bench/models/
+__pycache__/
