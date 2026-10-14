@@ -42,14 +42,21 @@ final class SetupModel {
     /// The style guide no longer matches the default, i.e. Personalise (or the user) has written it.
     var personalised = false
     var hotkey: Hotkey
+    var engine: SpeechEngine
+    var whisperStatus: WhisperEngine.Status
+    var deepgramKeySet = false
     var tryText = ""
 
     @ObservationIgnored var onHotkeyChange: ((Hotkey) -> Void)?
+    @ObservationIgnored var onEngineChange: ((SpeechEngine) -> Void)?
+    @ObservationIgnored var onSetDeepgramKey: (() -> Void)?
     @ObservationIgnored var onDone: (() -> Void)?
     @ObservationIgnored private var timer: Timer?
 
-    init(hotkey: Hotkey) {
+    init(hotkey: Hotkey, engine: SpeechEngine, whisperStatus: WhisperEngine.Status) {
         self.hotkey = hotkey
+        self.engine = engine
+        self.whisperStatus = whisperStatus
     }
 
     func start() {
@@ -102,14 +109,25 @@ final class SetupWindowController {
     private var window: NSWindow?
     private var model: SetupModel?
 
-    func show(hotkey: Hotkey, onHotkeyChange: @escaping (Hotkey) -> Void, onDone: @escaping () -> Void) {
+    func show(
+        hotkey: Hotkey,
+        engine: SpeechEngine,
+        whisperStatus: WhisperEngine.Status,
+        onHotkeyChange: @escaping (Hotkey) -> Void,
+        onEngineChange: @escaping (SpeechEngine) -> Void,
+        onSetDeepgramKey: @escaping () -> Void,
+        onDone: @escaping () -> Void
+    ) {
         if let window {
             NSApp.activate()
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let model = SetupModel(hotkey: hotkey)
+        let model = SetupModel(hotkey: hotkey, engine: engine, whisperStatus: whisperStatus)
+        model.deepgramKeySet = DeepgramKey.exists
         model.onHotkeyChange = onHotkeyChange
+        model.onEngineChange = onEngineChange
+        model.onSetDeepgramKey = onSetDeepgramKey
         model.onDone = { [weak self] in
             onDone()
             self?.close()
@@ -137,6 +155,16 @@ final class SetupWindowController {
 
     func close() {
         window?.close()
+    }
+
+    func update(whisperStatus: WhisperEngine.Status) {
+        model?.whisperStatus = whisperStatus
+    }
+
+    /// The menu changed the engine or the key while the window was open.
+    func update(engine: SpeechEngine) {
+        model?.engine = engine
+        model?.deepgramKeySet = DeepgramKey.exists
     }
 }
 
@@ -181,8 +209,22 @@ struct SetupView: View {
                     .onChange(of: model.hotkey) { _, key in model.onHotkeyChange?(key) }
                 }
                 Divider()
+                StepRow(number: 5, title: "Speech recognition", detail: engineDetail, done: engineReady) {
+                    VStack(alignment: .trailing) {
+                        Picker("", selection: $model.engine) {
+                            ForEach(SpeechEngine.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 170)
+                        .onChange(of: model.engine) { _, engine in model.onEngineChange?(engine) }
+                        if model.engine == .deepgram {
+                            Button(model.deepgramKeySet ? "Change Key…" : "Add API Key…") { model.onSetDeepgramKey?() }
+                        }
+                    }
+                }
+                Divider()
                 VStack(alignment: .leading, spacing: 8) {
-                    StepHeader(number: 5, title: "Try it", done: !model.tryText.isEmpty)
+                    StepHeader(number: 6, title: "Try it", done: !model.tryText.isEmpty)
                     TextField("Click here, hold \(model.hotkey.title) and say something…", text: $model.tryText, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(2...4)
@@ -191,7 +233,7 @@ struct SetupView: View {
                 .padding(.vertical, 12)
                 Divider()
                 StepRow(
-                    number: 6, title: "Make it sound like you",
+                    number: 7, title: "Make it sound like you",
                     detail: "Opens Claude Code in Terminal. It uses your connected tools (like Slack or Gmail) to read some of your own recent messages, then writes your personal style guide and a list of names it should know. You approve each tool it uses.",
                     done: model.personalised
                 ) {
@@ -213,6 +255,37 @@ struct SetupView: View {
         }
         .padding(24)
         .frame(width: 560)
+    }
+
+    private var whisperDetail: String {
+        switch model.whisperStatus {
+        case .idle: "The model (\(WhisperEngine.modelSize)) downloads once, in the background."
+        case let .downloading(fraction): "Downloading the model: \(Int(fraction * 100))% of \(WhisperEngine.modelSize). Apple's recogniser fills in until then."
+        case .loading: "Loading the model…"
+        case .ready: "Ready."
+        case let .failed(reason): "\(reason). Using Apple's recogniser for now."
+        }
+    }
+
+    private var engineDetail: String {
+        switch model.engine {
+        case .whisper:
+            "Transcribed on your Mac with Whisper, so audio never leaves it. \(whisperDetail)"
+        case .apple:
+            "Transcribed on your Mac by macOS. No download and slightly faster, but less accurate."
+        case .deepgram:
+            model.deepgramKeySet
+                ? "Streamed live to Deepgram with your own API key: the most accurate, but your audio goes to Deepgram. Falls back to Whisper on your Mac."
+                : "Streams your audio live to Deepgram for the best accuracy. Needs your own API key from console.deepgram.com."
+        }
+    }
+
+    private var engineReady: Bool {
+        switch model.engine {
+        case .whisper: model.whisperStatus == .ready
+        case .apple: true
+        case .deepgram: model.deepgramKeySet
+        }
     }
 
     @ViewBuilder private var claudeRow: some View {

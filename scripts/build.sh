@@ -20,18 +20,24 @@ IDENTITY="${CODESIGN_IDENTITY-$(security find-identity -v -p codesigning 2>/dev/
 swift build -c release --arch arm64
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp ".build/arm64-apple-macosx/release/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
+# whisper.cpp (on-device transcription). ditto keeps the framework's version symlinks intact.
+ditto ".build/arm64-apple-macosx/release/whisper.framework" "$APP/Contents/Frameworks/whisper.framework"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 if [[ -n "${VERSION:-}" ]]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION#v}" "$APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GITHUB_RUN_NUMBER:-1}" "$APP/Contents/Info.plist"
 fi
 
+# Sign the framework first: the app's signature covers it, and the hardened runtime only loads
+# libraries signed by the same team.
 if [[ -n "$IDENTITY" ]]; then
+  codesign --force --sign "$IDENTITY" --options runtime "$APP/Contents/Frameworks/whisper.framework"
   codesign --force --sign "$IDENTITY" --options runtime --entitlements Resources/Ode.entitlements "$APP"
   echo "Signed with: $IDENTITY"
 else
+  codesign --force --sign - "$APP/Contents/Frameworks/whisper.framework"
   codesign --force --sign - --entitlements Resources/Ode.entitlements "$APP"
   echo "Ad-hoc signed (macOS will re-ask for permissions after each rebuild)"
 fi

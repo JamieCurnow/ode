@@ -1,4 +1,4 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import Speech
 
 /// Live on-device speech-to-text using macOS 26's SpeechAnalyzer + DictationTranscriber.
@@ -7,6 +7,14 @@ import Speech
 final class Transcriber {
     /// Called with the full running transcript (finalised + volatile) as it changes.
     var onUpdate: ((String) -> Void)?
+    /// Called on the audio thread with each chunk of 16 kHz mono audio, e.g. to stream it to Deepgram.
+    /// Set before `start()`; it's cleared when the dictation ends.
+    var audioSink: (([Float]) -> Void)?
+
+    /// The whole dictation as 16 kHz mono samples, for Whisper to transcribe after release.
+    var recordedSamples: [Float] { recorder.samples }
+    private var recorder = SampleRecorder()
+    static let recordingFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
 
     private let engine = AVAudioEngine()
     private var locale: Locale?
@@ -72,9 +80,12 @@ final class Transcriber {
         guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
             compatibleWith: [module], considering: micFormat
         ) else { throw OdeError.audioFormat }
-        guard let converter = AVAudioConverter(from: micFormat, to: analyzerFormat) else {
-            throw OdeError.audioFormat
-        }
+        guard let converter = AVAudioConverter(from: micFormat, to: analyzerFormat),
+              let recordConverter = AVAudioConverter(from: micFormat, to: Self.recordingFormat)
+        else { throw OdeError.audioFormat }
+        let recorder = SampleRecorder()
+        self.recorder = recorder
+        let sink = audioSink
 
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         inputContinuation = continuation
@@ -111,28 +122,39 @@ final class Transcriber {
         }
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: micFormat) { buffer, _ in
-            let ratio = analyzerFormat.sampleRate / micFormat.sampleRate
-            let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
-            guard let out = AVAudioPCMBuffer(pcmFormat: analyzerFormat, frameCapacity: capacity) else { return }
-            var consumed = false
-            var error: NSError?
-            converter.convert(to: out, error: &error) { _, status in
-                if consumed {
-                    status.pointee = .noDataNow
-                    return nil
-                }
-                consumed = true
-                status.pointee = .haveData
-                return buffer
-            }
-            if error == nil, out.frameLength > 0 {
+            if let out = Self.convert(buffer, with: converter, to: analyzerFormat) {
                 continuation.yield(AnalyzerInput(buffer: out))
+            }
+            if let out = Self.convert(buffer, with: recordConverter, to: Self.recordingFormat),
+               let channel = out.floatChannelData?[0] {
+                let samples = Array(UnsafeBufferPointer(start: channel, count: Int(out.frameLength)))
+                recorder.append(samples)
+                sink?(samples)
             }
         }
 
         engine.prepare()
         try engine.start()
         isRunning = true
+    }
+
+    private nonisolated static func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter,
+                                            to format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let ratio = format.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
+        guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
+        var consumed = false
+        var error: NSError?
+        converter.convert(to: out, error: &error) { _, status in
+            if consumed {
+                status.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            status.pointee = .haveData
+            return buffer
+        }
+        return error == nil && out.frameLength > 0 ? out : nil
     }
 
     /// Bias recognition towards names and jargon from the style guide's Vocabulary section.
@@ -166,6 +188,7 @@ final class Transcriber {
     func stop() async -> String {
         guard isRunning else { return transcript }
         isRunning = false
+        audioSink = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         inputContinuation?.finish()
@@ -184,6 +207,7 @@ final class Transcriber {
 
     /// Abandon the current dictation without producing anything.
     func cancel() {
+        audioSink = nil
         guard isRunning else { return }
         isRunning = false
         engine.inputNode.removeTap(onBus: 0)
@@ -203,6 +227,41 @@ final class Transcriber {
         abandoned = true
         onUpdate = nil
         cancel()
+    }
+}
+
+/// Which recogniser produces the transcript that gets cleaned up and pasted. Apple's always drives the
+/// live preview (unless Deepgram is streaming), and is the last fallback for the others.
+enum SpeechEngine: String, CaseIterable {
+    case whisper, apple, deepgram
+
+    var title: String {
+        switch self {
+        case .whisper: "On Device: Whisper (Most Accurate)"
+        case .apple: "On Device: Apple (No Download)"
+        case .deepgram: "Deepgram (Your API Key)"
+        }
+    }
+
+    /// The user's language for Whisper ("en", "fr"…), from the system locale.
+    static var languageCode: String { Locale.current.language.languageCode?.identifier ?? "en" }
+}
+
+/// Collects samples from the audio thread for reading back on the main thread.
+final class SampleRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer: [Float] = []
+
+    func append(_ samples: [Float]) {
+        lock.lock()
+        buffer += samples
+        lock.unlock()
+    }
+
+    var samples: [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        return buffer
     }
 }
 
