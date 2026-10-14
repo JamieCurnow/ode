@@ -100,7 +100,7 @@ enum Main {
     private static func runEngineTest(_ clips: [URL]) async {
         let vocabulary = StyleGuide.vocabulary()
         let whisper = WhisperEngine()
-        whisper.prepare()
+        whisper.prepare(download: true)
         while true {
             switch whisper.status {
             case .ready: break
@@ -322,6 +322,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if speechEngine != .apple { whisper.prepare() }
         // Read the key now: a Keychain prompt mid-dictation would steal focus from the key press.
         if speechEngine == .deepgram { _ = DeepgramKey.read() }
+        // On first run, setup asks when it's done instead.
+        if !firstRun { DispatchQueue.main.async { self.offerWhisperDownload() } }
     }
 
     private func wireTranscriber() {
@@ -750,7 +752,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if speechEngine != .apple {
             let status = engineMenu.addItem(withTitle: whisperMenuStatus, action: nil, keyEquivalent: "")
             status.isEnabled = false
-            if case .failed = whisper.status { engineMenu.addItem(item("Retry Whisper Download", #selector(retryWhisper))) }
+        }
+        if whisper.needsDownload {
+            engineMenu.addItem(item("Download Whisper Model (\(WhisperEngine.modelSize))", #selector(downloadWhisper)))
         }
         let hasKey = DeepgramKey.exists
         engineMenu.addItem(item(hasKey ? "Change Deepgram API Key…" : "Add Deepgram API Key…", #selector(setDeepgramKey)))
@@ -808,7 +812,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             onEngineChange: { [weak self] engine in self?.choose(engine) },
             onSetDeepgramKey: { [weak self] in self?.askForDeepgramKey() },
-            onDone: { [weak self] in self?.defaults.set(true, forKey: "setupComplete") }
+            onDownloadWhisper: { [weak self] in self?.downloadWhisper() },
+            onDone: { [weak self] in
+                guard let self else { return }
+                self.defaults.set(true, forKey: "setupComplete")
+                self.offerWhisperDownload()
+            }
         )
     }
 
@@ -820,6 +829,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var whisperMenuStatus: String {
         switch whisper.status {
         case .idle: "Whisper: not loaded"
+        case .notDownloaded: "Whisper: not downloaded, using Apple"
         case let .downloading(fraction): "Whisper: downloading \(Int(fraction * 100))% of \(WhisperEngine.modelSize)"
         case .loading: "Whisper: loading…"
         case .ready: "Whisper: ready"
@@ -832,7 +842,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         choose(engine)
     }
 
-    private func choose(_ engine: SpeechEngine) {
+    /// `confirmed` skips asking before a Whisper download, when the user has just asked for one.
+    private func choose(_ engine: SpeechEngine, confirmed: Bool = false) {
+        if engine == .whisper, whisper.needsDownload, !confirmed, !askToDownloadWhisper() {
+            setup.update(engine: speechEngine)
+            return
+        }
         if engine == .deepgram, !DeepgramKey.exists {
             // Only switch once there's a key to use. Saving one switches to Deepgram.
             askForDeepgramKey()
@@ -847,8 +862,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let changed = engine != speechEngine
         speechEngine = engine
         Log.info("Speech recognition: \(engine.rawValue)")
-        // Whisper backs up Deepgram too; Apple-only frees the model's memory.
-        if engine == .apple { whisper.unload() } else { whisper.prepare() }
+        // Whisper backs up Deepgram too; Apple-only frees the model's memory. Choosing Whisper means
+        // they've agreed to the download (above), but Deepgram alone doesn't.
+        if engine == .apple { whisper.unload() } else { whisper.prepare(download: engine == .whisper) }
         setup.update(engine: engine)
         if changed { overlay.showNotice(Self.switchedNotice(to: engine)) }
     }
@@ -869,7 +885,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func retryWhisper() { whisper.prepare() }
+    /// Asks once whether to download Whisper, for anyone set to use it (or Deepgram, which falls back to
+    /// it) who doesn't have the model yet. Saying no switches Whisper users to Apple's recogniser.
+    private func offerWhisperDownload() {
+        guard speechEngine != .apple, whisper.needsDownload, !defaults.bool(forKey: "whisperOffered") else { return }
+        if askToDownloadWhisper() {
+            whisper.prepare(download: true)
+        } else if speechEngine == .whisper {
+            choose(.apple)
+        }
+    }
+
+    private func askToDownloadWhisper() -> Bool {
+        defaults.set(true, forKey: "whisperOffered")
+        let alert = NSAlert()
+        alert.messageText = "Download Whisper for more accurate dictation?"
+        alert.informativeText = "Whisper transcribes on your Mac, so your audio never leaves it, and gets far more "
+            + "names and jargon right than Apple's built-in recogniser. It's a one-off \(WhisperEngine.modelSize) "
+            + "download and uses about 600 MB of memory while Ode is running.\n\n"
+            + "You can download it later from Speech Recognition in the menu bar."
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Not Now")
+        NSApp.activate()
+        let yes = alert.runModal() == .alertFirstButtonReturn
+        Log.info("Whisper download \(yes ? "accepted" : "declined")")
+        return yes
+    }
+
+    /// The menu's or setup's Download button: they've asked for it, so don't ask again.
+    @objc private func downloadWhisper() {
+        defaults.set(true, forKey: "whisperOffered")
+        if speechEngine == .deepgram {
+            whisper.prepare(download: true)
+        } else {
+            choose(.whisper, confirmed: true)
+        }
+    }
 
     @objc private func setDeepgramKey() { askForDeepgramKey() }
 

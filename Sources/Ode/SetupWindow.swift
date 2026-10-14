@@ -50,6 +50,7 @@ final class SetupModel {
     @ObservationIgnored var onHotkeyChange: ((Hotkey) -> Void)?
     @ObservationIgnored var onEngineChange: ((SpeechEngine) -> Void)?
     @ObservationIgnored var onSetDeepgramKey: (() -> Void)?
+    @ObservationIgnored var onDownloadWhisper: (() -> Void)?
     @ObservationIgnored var onDone: (() -> Void)?
     @ObservationIgnored private var timer: Timer?
 
@@ -116,6 +117,7 @@ final class SetupWindowController {
         onHotkeyChange: @escaping (Hotkey) -> Void,
         onEngineChange: @escaping (SpeechEngine) -> Void,
         onSetDeepgramKey: @escaping () -> Void,
+        onDownloadWhisper: @escaping () -> Void,
         onDone: @escaping () -> Void
     ) {
         if let window {
@@ -128,6 +130,7 @@ final class SetupWindowController {
         model.onHotkeyChange = onHotkeyChange
         model.onEngineChange = onEngineChange
         model.onSetDeepgramKey = onSetDeepgramKey
+        model.onDownloadWhisper = onDownloadWhisper
         model.onDone = { [weak self] in
             onDone()
             self?.close()
@@ -220,6 +223,9 @@ struct SetupView: View {
                         if model.engine == .deepgram {
                             Button(model.deepgramKeySet ? "Change Key…" : "Add API Key…") { model.onSetDeepgramKey?() }
                         }
+                        if model.engine == .whisper, whisperNeedsDownload {
+                            Button("Download (\(WhisperEngine.modelSize))") { model.onDownloadWhisper?() }
+                        }
                     }
                 }
                 Divider()
@@ -259,7 +265,8 @@ struct SetupView: View {
 
     private var whisperDetail: String {
         switch model.whisperStatus {
-        case .idle: "The model (\(WhisperEngine.modelSize)) downloads once, in the background."
+        case .idle: "Not loaded yet."
+        case .notDownloaded: "Needs a one-off \(WhisperEngine.modelSize) download. Apple's recogniser fills in until then."
         case let .downloading(fraction): "Downloading the model: \(Int(fraction * 100))% of \(WhisperEngine.modelSize). Apple's recogniser fills in until then."
         case .loading: "Loading the model…"
         case .ready: "Ready."
@@ -277,6 +284,13 @@ struct SetupView: View {
             model.deepgramKeySet
                 ? "Streamed live to Deepgram with your own API key: the most accurate, but your audio goes to Deepgram. Falls back to Whisper on your Mac."
                 : "Streams your audio live to Deepgram for the best accuracy. Needs your own API key from console.deepgram.com."
+        }
+    }
+
+    private var whisperNeedsDownload: Bool {
+        switch model.whisperStatus {
+        case .notDownloaded, .failed: true
+        default: false
         }
     }
 

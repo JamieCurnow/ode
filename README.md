@@ -18,7 +18,7 @@ Or download `Ode.dmg` from [Releases](https://github.com/jamiecurnow/ode/release
 
 - Claude Code, signed in
 - macOS 26+ on Apple Silicon (for the on-device `SpeechAnalyzer` API)
-- About 600 MB of disk for the Whisper model, downloaded on first launch
+- About 600 MB of disk for the Whisper model, if you choose to download it
 
 ## ⌨️ Usage
 
@@ -48,7 +48,7 @@ hold ⌥ → 🎤 live preview (Apple) → release → 🗣️ Whisper on your M
 
   | | Where | Notes |
   |---|---|---|
-  | **Whisper** (default) | On your Mac | Whisper large-v3-turbo through [whisper.cpp](https://github.com/ggml-org/whisper.cpp) on the GPU, 5-bit quantised (574 MB, downloads once in the background). Runs on the whole clip when you let go, about 0.5s for a typical dictation. Apple's recogniser drives the live preview and fills in until the model is ready. |
+  | **Whisper** (default) | On your Mac | Whisper large-v3-turbo through [whisper.cpp](https://github.com/ggml-org/whisper.cpp) on the GPU, 5-bit quantised (574 MB). Ode asks before downloading it, and if you say not now it uses Apple until you download it from the menu. Runs on the whole clip when you let go, about 0.5s for a typical dictation. Apple's recogniser drives the live preview and fills in until the model is ready. |
   | **Apple** | On your Mac | macOS's `SpeechAnalyzer`. No download and slightly faster, but noticeably less accurate. |
   | **Deepgram** | Deepgram's servers | nova-3, streamed live with your own API key (stored in your Keychain, billed to your Deepgram account). The best with names and jargon, and the live preview is Deepgram's too. Final text is ready about 0.2s after you let go. If Deepgram fails, Ode uses Whisper and tells you why. |
 

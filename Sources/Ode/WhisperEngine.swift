@@ -5,13 +5,15 @@ import whisper
 /// On-device transcription with Whisper large-v3-turbo (whisper.cpp, Metal). Runs on the whole clip
 /// once the key is released, so the live preview still comes from Apple's recogniser.
 ///
-/// The model (574 MB, 5-bit quantised) downloads in the background on first launch. Until it's ready,
+/// The model (574 MB, 5-bit quantised) only downloads once the user agrees to it. Until it's ready,
 /// or if it fails, Ode uses Apple's transcript instead.
 @MainActor
 final class WhisperEngine {
     enum Status: Equatable {
         /// Not loaded yet, whether or not the model file is on disk. `prepare()` sorts it out.
         case idle
+        /// The model isn't on disk, and the user hasn't said to download it yet.
+        case notDownloaded
         case downloading(Double)
         case loading
         case ready
@@ -41,16 +43,27 @@ final class WhisperEngine {
 
     var isReady: Bool { status == .ready }
 
-    /// Download the model if needed, then load it. Safe to call repeatedly.
-    func prepare() {
+    /// The model isn't on disk and isn't on its way.
+    var needsDownload: Bool {
+        switch status {
+        case .downloading, .loading, .ready: false
+        default: !FileManager.default.fileExists(atPath: Self.modelFile.path)
+        }
+    }
+
+    /// Load the model if it's on disk. Without it, `download` says whether to fetch it now, which only
+    /// happens once the user has agreed to. Safe to call repeatedly.
+    func prepare(download: Bool = false) {
         switch status {
         case .downloading, .loading, .ready: return
         default: break
         }
         if FileManager.default.fileExists(atPath: Self.modelFile.path) {
             load()
-        } else {
+        } else if download {
             startDownload()
+        } else {
+            status = .notDownloaded
         }
     }
 
@@ -122,7 +135,7 @@ final class WhisperEngine {
                         self.status = .ready
                         Log.info("Whisper model ready (\(Int(Date().timeIntervalSince(started) * 1000))ms to load)")
                     } else {
-                        // A corrupt file won't get better on its own: remove it so the next launch re-downloads.
+                        // A corrupt file won't get better on its own: remove it so it can be downloaded again.
                         try? FileManager.default.removeItem(atPath: path)
                         self.status = .failed("The Whisper model couldn't be loaded")
                         Log.error("Whisper model failed to load, removed it so it downloads again")
