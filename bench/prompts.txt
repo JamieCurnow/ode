@@ -1,0 +1,11 @@
+# One clip per line: id | exactly what to say. Read it like you'd dictate, fillers and corrections included.
+01-huddle | hey Kathryn um can you jump on a huddle with Lyssa and Callum about the Hub of Hope staging deploy it's been failing since this morning
+02-webhook | so the Stripe webhook is hitting the Cloudflare worker fine but the Resend email never goes out I think it's the SendGrid fallback no sorry the Resend API key on prod
+03-email | Hi Gary thanks for sending over the brief for Visit Cornwall we've put together a rough estimate in HYOS and I'll get a proposal over to you by Friday new paragraph let me know if you have any questions in the meantime
+04-pr | can you open a PR that bumps the GitHub Actions workflow off Node twenty and then ping Xan and Alfie in ClickUp to review it
+05-meeting | meeting at three no actually make it four with Gemma and Logan from Barratt Homes about the Blueprint retainer and the SLA upsell
+06-bullets | bullet point log time in Everhour new line bullet point book leave in Timetastic for Friday new line bullet point check the Marker.io feedback on Wavescapes
+07-ramble | right so I've been thinking about the Up the Hill onboarding flow and I reckon we should um move the Yoti age check to after sign up rather than before because at the moment loads of people drop off on that first screen can we get Will and Sophie to have a look at the numbers in PostHog and see how bad it actually is
+08-mcp | the MCP server returns a four oh one when the OAuth token expires so we need to refresh it in the middleware and retry the request once before we throw
+09-quick | yea bang on nice one Juno ship it
+10-lastpass | Thomas can you check the LastPass share for the HubSpot login Tom says it's not working for him on the Tendr account

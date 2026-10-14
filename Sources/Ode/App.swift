@@ -1,5 +1,5 @@
 import AppKit
-import AVFoundation
+@preconcurrency import AVFoundation
 import ServiceManagement
 import SwiftUI
 
@@ -20,6 +20,51 @@ enum Main {
                 exit(0)
             }
             RunLoop.main.run()
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--test-transcribe-dir"), CommandLine.arguments.indices.contains(i + 1) {
+            // For bench/: every .wav in the folder, with and without vocabulary, as JSON lines on stdout.
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            let clips = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.pathExtension == "wav" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            Task { @MainActor in
+                let transcriber = Transcriber()
+                try? await transcriber.prepare()
+                for clip in clips {
+                    for vocab in [false, true] {
+                        let start = Date()
+                        let text = (try? await transcriber.transcribeFile(clip, useVocabulary: vocab)) ?? ""
+                        let row: [String: Any] = [
+                            "id": clip.deletingPathExtension().lastPathComponent,
+                            "engine": vocab ? "apple+vocab" : "apple",
+                            "text": text,
+                            "ms": Int(Date().timeIntervalSince(start) * 1000),
+                        ]
+                        if let data = try? JSONSerialization.data(withJSONObject: row) {
+                            print(String(decoding: data, as: UTF8.self))
+                        }
+                    }
+                }
+                exit(0)
+            }
+            RunLoop.main.run()
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--test-engines"), CommandLine.arguments.indices.contains(i + 1) {
+            // Runs .wav clips through Whisper, and through Deepgram streamed at real-time pace as if dictated,
+            // timing each from the "release" (end of audio) like a real dictation. Prints JSON lines.
+            let path = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            let clips = path.pathExtension == "wav" ? [path]
+                : ((try? FileManager.default.contentsOfDirectory(at: path, includingPropertiesForKeys: nil)) ?? [])
+                    .filter { $0.pathExtension == "wav" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            Task { @MainActor in
+                await runEngineTest(clips)
+                exit(0)
+            }
+            RunLoop.main.run()
+        }
+        if CommandLine.arguments.contains("--print-vocabulary") {
+            StyleGuide.vocabulary().forEach { print($0) }
+            return
         }
         if let i = CommandLine.arguments.firstIndex(of: "--test-overlay"), CommandLine.arguments.indices.contains(i + 1) {
             // Renders the overlay pill with sample text to PNGs, for checking layout without dictating.
@@ -50,6 +95,78 @@ enum Main {
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()
+    }
+
+    private static func runEngineTest(_ clips: [URL]) async {
+        let vocabulary = StyleGuide.vocabulary()
+        let whisper = WhisperEngine()
+        whisper.prepare()
+        while true {
+            switch whisper.status {
+            case .ready: break
+            case let .failed(reason): print("Whisper unavailable: \(reason)")
+            default:
+                try? await Task.sleep(for: .milliseconds(200))
+                continue
+            }
+            break
+        }
+        // DEEPGRAM_API_KEY lets an unsigned test build skip the Keychain's "allow access" prompt.
+        let key = ProcessInfo.processInfo.environment["DEEPGRAM_API_KEY"] ?? DeepgramKey.read()
+        if key == nil { print("No Deepgram key in the Keychain, skipping Deepgram") }
+        func emit(_ clip: URL, _ engine: String, _ text: String?, _ start: Date) {
+            let row: [String: Any] = [
+                "id": clip.deletingPathExtension().lastPathComponent, "engine": engine,
+                "text": text ?? "", "ms": Int(Date().timeIntervalSince(start) * 1000),
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: row) { print(String(decoding: data, as: UTF8.self)) }
+        }
+        for clip in clips {
+            guard let samples = try? readSamples(clip) else { print("Couldn't read \(clip.lastPathComponent)"); continue }
+            if whisper.isReady {
+                let start = Date()
+                let text = await whisper.transcribe(samples, vocabulary: vocabulary, language: SpeechEngine.languageCode)
+                emit(clip, "ode-whisper", text, start)
+            }
+            if let key {
+                let stream = DeepgramStream(key: key, vocabulary: vocabulary, language: "en")
+                stream.start()
+                let chunk = 1600 // 100 ms
+                var offset = 0
+                while offset < samples.count {
+                    let end = min(offset + chunk, samples.count)
+                    stream.send(Array(samples[offset..<end]))
+                    offset = end
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                let start = Date()
+                let text = await stream.finish(timeout: 3)
+                emit(clip, "ode-deepgram", text ?? "<\(stream.failure ?? "nothing heard")>", start)
+            }
+        }
+        whisper.shutdown()
+    }
+
+    /// A .wav file as 16 kHz mono samples, the format dictation records in.
+    private static func readSamples(_ url: URL) throws -> [Float] {
+        let file = try AVAudioFile(forReading: url)
+        let format = Transcriber.recordingFormat
+        guard let input = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
+              let converter = AVAudioConverter(from: file.processingFormat, to: format)
+        else { throw OdeError.audioFormat }
+        try file.read(into: input)
+        let capacity = AVAudioFrameCount(Double(input.frameLength) * format.sampleRate / file.processingFormat.sampleRate) + 1024
+        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { throw OdeError.audioFormat }
+        var consumed = false
+        var error: NSError?
+        converter.convert(to: output, error: &error) { _, status in
+            if consumed { status.pointee = .endOfStream; return nil }
+            consumed = true
+            status.pointee = .haveData
+            return input
+        }
+        if let error { throw error }
+        return Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
     }
 
     /// `Ode --test-clean [app name] [--runs N]`: cleans each stdin line through the warm-process
@@ -141,6 +258,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private enum State { case idle, listening, processing }
 
     private var transcriber = Transcriber()
+    private let whisper = WhisperEngine()
+    /// The live Deepgram stream for the dictation in progress, when that engine is chosen.
+    private var deepgram: DeepgramStream?
+    /// Deepgram is chosen and a key is saved, but macOS hasn't let Ode read it yet.
+    private var deepgramLocked = false
     /// The Mac woke mid-dictation: rebuild the speech pipeline once that dictation is done.
     private var resetPending = false
     private let cleaner = ClaudeCleaner()
@@ -165,6 +287,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotkey: Hotkey {
         get { Hotkey(rawValue: defaults.string(forKey: "hotkey") ?? "") ?? .leftOption }
         set { defaults.set(newValue.rawValue, forKey: "hotkey") }
+    }
+    private var speechEngine: SpeechEngine {
+        get { SpeechEngine(rawValue: defaults.string(forKey: "speechEngine") ?? "") ?? .whisper }
+        set { defaults.set(newValue.rawValue, forKey: "speechEngine") }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -191,11 +317,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if cleanupEnabled { cleaner.start() }
 
         prepareTranscriber()
+        whisper.onStatusChange = { [weak self] status in self?.setup.update(whisperStatus: status) }
+        // Whisper is also Deepgram's fallback, so only Apple-only skips the model.
+        if speechEngine != .apple { whisper.prepare() }
+        // Read the key now: a Keychain prompt mid-dictation would steal focus from the key press.
+        if speechEngine == .deepgram { _ = DeepgramKey.read() }
     }
 
     private func wireTranscriber() {
         transcriber.onUpdate = { [weak self] text in
             guard let self, self.state == .listening else { return }
+            // Deepgram's live text is better, so once it's talking, Apple's preview steps aside.
+            if let deepgram = self.deepgram, !deepgram.transcript.isEmpty { return }
             if self.overlay.isVisible { self.overlay.update(text: text) }
         }
     }
@@ -215,6 +348,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func resetTranscriber(_ reason: String) {
         Log.info("Resetting speech pipeline: \(reason)")
         transcriber.abandon()
+        deepgram?.cancel()
+        deepgram = nil
         transcriber = Transcriber()
         startTask = nil
         resetPending = false
@@ -256,6 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         cleaner.stop()
+        whisper.shutdown()
     }
 
     // MARK: - Dictation flow
@@ -289,6 +425,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         targetApp = NSWorkspace.shared.frontmostApplication
         setStatusIcon(listening: true)
 
+        startDeepgramIfChosen()
+
         // Start the mic straight away so the first word isn't lost, but only show the
         // overlay after a beat, so a quick ⌥-shortcut doesn't flash it.
         startTask = Task { try await transcriber.start() }
@@ -311,8 +449,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let start = startTask
         let transcriber = self.transcriber
+        let stream = deepgram
+        deepgram = nil
         Task {
+            var usedStream = false
             defer {
+                if !usedStream { stream?.cancel() }
                 state = .idle
                 setStatusIcon(listening: false)
                 if resetPending { resetTranscriber("woke from sleep during the last dictation") }
@@ -328,15 +470,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             let releasedAt = Date()
-            guard let raw = try? await withDeadline(stallLimit, { await transcriber.stop() }) else {
+            guard let appleText = try? await withDeadline(stallLimit, { await transcriber.stop() }) else {
                 recoverFromStall("finishing the transcript")
                 return
             }
+            // Shorter taps are just ⌥ on its own, not dictation.
+            guard heldFor > 0.3 else {
+                overlay.hide()
+                return
+            }
+            usedStream = true
+            let heard = await finalTranscript(apple: appleText, samples: transcriber.recordedSamples, deepgram: stream)
+            let raw = heard.text
             let transcribeMs = ms(since: releasedAt)
 
-            guard heldFor > 0.3, !raw.isEmpty else {
-                // Shorter taps are just ⌥ on its own, not dictation.
-                if heldFor > 0.3 { Log.info("Dictation: held \(String(format: "%.1f", heldFor))s, heard nothing") }
+            guard !raw.isEmpty else {
+                Log.info("Dictation: held \(String(format: "%.1f", heldFor))s, heard nothing")
                 overlay.hide()
                 return
             }
@@ -367,12 +516,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             let pasteMs = ms(since: releasedAt)
             Log.info("Dictation: held \(String(format: "%.1f", heldFor))s, \(raw.count)→\(output.count) chars, "
-                + "final transcript \(transcribeMs)ms, cleanup \(cleanMs)ms, release→paste \(pasteMs)ms")
+                + "final transcript \(transcribeMs)ms (\(heard.source)), cleanup \(cleanMs)ms, release→paste \(pasteMs)ms")
             guard !output.isEmpty else { return }
             if AXIsProcessTrusted() {
                 await Paster.paste(output)
                 // So a rough paste isn't mistaken for the style guide not working.
-                if let fallbackReason { overlay.showNotice("Pasted as heard, without cleanup (\(fallbackReason))") }
+                if let fallbackReason {
+                    overlay.showNotice("Pasted as heard, without cleanup (\(fallbackReason))")
+                } else if let notice = heard.notice {
+                    overlay.showNotice(notice)
+                }
             } else {
                 // Without Accessibility, macOS silently drops our ⌘V. Hand the text over instead.
                 copy(output)
@@ -385,6 +538,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func cancelDictation() {
         guard state == .listening else { return }
         state = .idle
+        deepgram?.cancel()
+        deepgram = nil
         setStatusIcon(listening: false)
         overlay.hide()
         let start = startTask
@@ -398,6 +553,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             transcriber.cancel()
         }
+    }
+
+    // MARK: - Speech engines
+
+    private func startDeepgramIfChosen() {
+        guard speechEngine == .deepgram else { return }
+        guard let key = DeepgramKey.unlocked, !key.isEmpty else {
+            // Not read yet (e.g. the Keychain prompt was dismissed). Reading it now could prompt mid-press.
+            deepgramLocked = DeepgramKey.exists
+            return
+        }
+        let stream = DeepgramStream(
+            key: key,
+            vocabulary: StyleGuide.vocabulary(),
+            language: SpeechEngine.languageCode == "en" ? "en" : "multi"
+        )
+        stream.onUpdate = { [weak self] text in
+            guard let self, self.state == .listening, self.overlay.isVisible, !text.isEmpty else { return }
+            self.overlay.update(text: text)
+        }
+        stream.start()
+        transcriber.audioSink = { [weak stream] samples in stream?.send(samples) }
+        deepgram = stream
+    }
+
+    /// The transcript to clean up: Deepgram's if it's streaming, else Whisper's, else Apple's.
+    /// `notice` explains a fallback the user would want to know about (e.g. a rejected API key).
+    private func finalTranscript(apple: String, samples: [Float], deepgram: DeepgramStream?) async
+        -> (text: String, source: String, notice: String?) {
+        var notice: String?
+        if deepgramLocked {
+            deepgramLocked = false
+            notice = "Ode couldn't read your Deepgram key from the Keychain, so this was transcribed on your Mac. "
+                + "Choose Deepgram in the Speech Recognition menu to unlock it"
+        }
+        if let deepgram {
+            if let text = await deepgram.finish(timeout: 3) { return (text, "deepgram", nil) }
+            guard let failure = deepgram.failure else {
+                // Deepgram answered and heard nothing, so there's nothing to transcribe.
+                return ("", "deepgram", nil)
+            }
+            Log.error("Deepgram failed (\(failure)), using on-device transcription")
+            notice = "Deepgram didn't work (\(failure)), so this was transcribed on your Mac"
+        }
+        if speechEngine != .apple, whisper.isReady, Self.hasSpeech(samples) {
+            // Whisper takes ~0.6s on a long dictation. If it's far slower than that, something's wrong.
+            let limit = 3 + Double(samples.count) / 16000 * 0.2
+            let vocabulary = StyleGuide.vocabulary()
+            if let text = try? await withDeadline(limit, {
+                await self.whisper.transcribe(samples, vocabulary: vocabulary, language: SpeechEngine.languageCode) ?? ""
+            }), !text.isEmpty {
+                return (text, "whisper", notice)
+            }
+            Log.info("Whisper gave nothing back within \(Int(limit))s, using Apple's transcript")
+        }
+        return (apple, "apple", notice)
+    }
+
+    /// Whisper invents text ("Thank you.") for silence, so only run it on audio that has some speech in it.
+    /// On a MacBook mic, room noise sits around 0.0002 RMS and speech peaks at 0.015-0.04, so 90 ms above
+    /// 0.003 means someone spoke, while a single click doesn't count.
+    private static func hasSpeech(_ samples: [Float]) -> Bool {
+        let window = 480 // 30 ms at 16 kHz
+        var loud = 0
+        var start = 0
+        while start + window <= samples.count {
+            var sum: Float = 0
+            for i in start..<(start + window) { sum += samples[i] * samples[i] }
+            if (sum / Float(window)).squareRoot() > 0.003 { loud += 1 }
+            if loud >= 3 { return true }
+            start += window
+        }
+        return false
     }
 
     /// How long starting the mic or finishing a transcript may take before Ode treats it as stuck.
@@ -511,6 +739,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkeyItem.submenu = hotkeyMenu
         menu.addItem(hotkeyItem)
 
+        let engineMenu = NSMenu()
+        for engine in SpeechEngine.allCases {
+            let entry = item(engine.title, #selector(chooseEngine(_:)))
+            entry.representedObject = engine.rawValue
+            entry.state = engine == speechEngine ? .on : .off
+            engineMenu.addItem(entry)
+        }
+        engineMenu.addItem(.separator())
+        if speechEngine != .apple {
+            let status = engineMenu.addItem(withTitle: whisperMenuStatus, action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            if case .failed = whisper.status { engineMenu.addItem(item("Retry Whisper Download", #selector(retryWhisper))) }
+        }
+        let hasKey = DeepgramKey.exists
+        engineMenu.addItem(item(hasKey ? "Change Deepgram API Key…" : "Add Deepgram API Key…", #selector(setDeepgramKey)))
+        if hasKey { engineMenu.addItem(item("Remove Deepgram API Key", #selector(removeDeepgramKey))) }
+        let engineItem = NSMenuItem(title: "Speech Recognition", action: nil, keyEquivalent: "")
+        engineItem.submenu = engineMenu
+        menu.addItem(engineItem)
+
         menu.addItem(.separator())
         let copyRaw = item("Copy Last Raw Transcript", #selector(copyLastRaw))
         copyRaw.isEnabled = !lastRaw.isEmpty
@@ -550,12 +798,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func showSetup() {
         setup.show(
             hotkey: hotkey,
+            engine: speechEngine,
+            whisperStatus: whisper.status,
             onHotkeyChange: { [weak self] key in
                 guard let self else { return }
                 self.hotkey = key
                 self.hotkeys.hotkey = key
                 self.hotkeys.start()
             },
+            onEngineChange: { [weak self] engine in self?.choose(engine) },
+            onSetDeepgramKey: { [weak self] in self?.askForDeepgramKey() },
             onDone: { [weak self] in self?.defaults.set(true, forKey: "setupComplete") }
         )
     }
@@ -563,6 +815,119 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func editStyle() {
         StyleGuide.ensureExists()
         NSWorkspace.shared.open(AppPaths.styleFile)
+    }
+
+    private var whisperMenuStatus: String {
+        switch whisper.status {
+        case .idle: "Whisper: not loaded"
+        case let .downloading(fraction): "Whisper: downloading \(Int(fraction * 100))% of \(WhisperEngine.modelSize)"
+        case .loading: "Whisper: loading…"
+        case .ready: "Whisper: ready"
+        case let .failed(reason): "Whisper: \(reason)"
+        }
+    }
+
+    @objc private func chooseEngine(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let engine = SpeechEngine(rawValue: raw) else { return }
+        choose(engine)
+    }
+
+    private func choose(_ engine: SpeechEngine) {
+        if engine == .deepgram, !DeepgramKey.exists {
+            // Only switch once there's a key to use. Saving one switches to Deepgram.
+            askForDeepgramKey()
+            setup.update(engine: speechEngine)
+            return
+        }
+        if engine == .deepgram, DeepgramKey.unlocked == nil {
+            // Read the key now, while nothing is held: macOS may ask for the login password to allow it.
+            // Deferred a beat so a menu that triggered this has fully closed and released the keyboard.
+            DispatchQueue.main.async { _ = DeepgramKey.read() }
+        }
+        let changed = engine != speechEngine
+        speechEngine = engine
+        Log.info("Speech recognition: \(engine.rawValue)")
+        // Whisper backs up Deepgram too; Apple-only frees the model's memory.
+        if engine == .apple { whisper.unload() } else { whisper.prepare() }
+        setup.update(engine: engine)
+        if changed { overlay.showNotice(Self.switchedNotice(to: engine)) }
+    }
+
+    /// The pop-up confirming which recogniser dictation now uses.
+    private static func switchedNotice(to engine: SpeechEngine) -> String {
+        switch engine {
+        case .deepgram:
+            return "Speech recognition: Deepgram, with your API key"
+        case .apple:
+            return "Speech recognition: Apple, on your Mac"
+        case .whisper:
+            // Loading from disk takes under a second; only a download is worth mentioning.
+            if FileManager.default.fileExists(atPath: WhisperEngine.modelFile.path) {
+                return "Speech recognition: Whisper, on your Mac"
+            }
+            return "Speech recognition: Whisper (using Apple until it downloads)"
+        }
+    }
+
+    @objc private func retryWhisper() { whisper.prepare() }
+
+    @objc private func setDeepgramKey() { askForDeepgramKey() }
+
+    @objc private func removeDeepgramKey() {
+        DeepgramKey.delete()
+        if speechEngine == .deepgram { choose(.whisper) }
+        setup.update(engine: speechEngine)
+    }
+
+    /// Asks for a Deepgram key, checks it with Deepgram, and saves it to the Keychain.
+    private func askForDeepgramKey() {
+        let alert = NSAlert()
+        alert.messageText = "Deepgram API Key"
+        alert.informativeText = "Ode streams your audio to Deepgram while you hold the key, for the most accurate "
+            + "transcription. Usage is billed to your Deepgram account. Create a key at console.deepgram.com. "
+            + "It's stored in your Keychain."
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.placeholderString = "Paste your API key"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let key = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        Task {
+            switch await DeepgramKey.validate(key) {
+            case false:
+                showAlert("Deepgram didn't accept that key", "Check you copied the whole key from console.deepgram.com, then try again.")
+                return
+            case nil:
+                // Offline: save it anyway, a bad key falls back to on-device transcription with a notice.
+                Log.info("Couldn't reach Deepgram to check the API key, saved it anyway")
+            case true:
+                break
+            }
+            guard DeepgramKey.save(key) else {
+                showAlert("Couldn't save the key", "Ode couldn't write to your Keychain.")
+                return
+            }
+            Log.info("Deepgram API key saved")
+            // A new or changed key means they want Deepgram, so switch to it.
+            if speechEngine == .deepgram {
+                overlay.showNotice("Deepgram key updated")
+            } else {
+                choose(.deepgram)
+            }
+            setup.update(engine: speechEngine)
+        }
+    }
+
+    private func showAlert(_ title: String, _ message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        NSApp.activate()
+        alert.runModal()
     }
 
     @objc private func chooseHotkey(_ sender: NSMenuItem) {
