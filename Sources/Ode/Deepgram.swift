@@ -6,10 +6,16 @@ enum DeepgramKey {
     private static let service = "Ode Deepgram"
     private static let account = "deepgram"
 
-    /// Read once and cached: a key added with the `security` CLI makes macOS ask before each new reader
-    /// ("Always Allow" stops that), so don't go back to the Keychain on every dictation.
+    /// Read once and cached: a key Ode didn't save itself (e.g. added with the `security` CLI) makes macOS
+    /// ask for the login password before Ode can read it, so don't go back to the Keychain every dictation.
     @MainActor private static var cached: String??
 
+    /// The key if it's already been read, without touching the Keychain. Used mid-dictation, where a
+    /// password prompt would steal focus from the held key.
+    @MainActor static var unlocked: String? { cached ?? nil }
+
+    /// Reads the key, which may show macOS's password prompt. Never call this while a menu is open:
+    /// the menu holds the keyboard, so the prompt can't be typed into and the menu freezes.
     @MainActor static func read() -> String? {
         if let cached { return cached }
         let query: [String: Any] = [
@@ -27,7 +33,18 @@ enum DeepgramKey {
         return trimmed
     }
 
-    @MainActor static var exists: Bool { read()?.isEmpty == false }
+    /// Whether a key is saved. Only looks at the item's attributes, which never prompts.
+    @MainActor static var exists: Bool {
+        if let cached { return cached?.isEmpty == false }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+        ]
+        var result: AnyObject?
+        return SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess
+    }
 
     @MainActor @discardableResult
     static func save(_ key: String) -> Bool {

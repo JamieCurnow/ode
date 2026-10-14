@@ -261,6 +261,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let whisper = WhisperEngine()
     /// The live Deepgram stream for the dictation in progress, when that engine is chosen.
     private var deepgram: DeepgramStream?
+    /// Deepgram is chosen and a key is saved, but macOS hasn't let Ode read it yet.
+    private var deepgramLocked = false
     /// The Mac woke mid-dictation: rebuild the speech pipeline once that dictation is done.
     private var resetPending = false
     private let cleaner = ClaudeCleaner()
@@ -556,7 +558,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Speech engines
 
     private func startDeepgramIfChosen() {
-        guard speechEngine == .deepgram, let key = DeepgramKey.read(), !key.isEmpty else { return }
+        guard speechEngine == .deepgram else { return }
+        guard let key = DeepgramKey.unlocked, !key.isEmpty else {
+            // Not read yet (e.g. the Keychain prompt was dismissed). Reading it now could prompt mid-press.
+            deepgramLocked = DeepgramKey.exists
+            return
+        }
         let stream = DeepgramStream(
             key: key,
             vocabulary: StyleGuide.vocabulary(),
@@ -576,6 +583,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func finalTranscript(apple: String, samples: [Float], deepgram: DeepgramStream?) async
         -> (text: String, source: String, notice: String?) {
         var notice: String?
+        if deepgramLocked {
+            deepgramLocked = false
+            notice = "Ode couldn't read your Deepgram key from the Keychain, so this was transcribed on your Mac. "
+                + "Choose Deepgram in the Speech Recognition menu to unlock it"
+        }
         if let deepgram {
             if let text = await deepgram.finish(timeout: 3) { return (text, "deepgram", nil) }
             guard let failure = deepgram.failure else {
@@ -826,6 +838,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             askForDeepgramKey(thenUse: true)
             setup.update(engine: speechEngine)
             return
+        }
+        if engine == .deepgram, DeepgramKey.unlocked == nil {
+            // Read the key now, while nothing is held: macOS may ask for the login password to allow it.
+            // Deferred a beat so a menu that triggered this has fully closed and released the keyboard.
+            DispatchQueue.main.async { _ = DeepgramKey.read() }
         }
         speechEngine = engine
         Log.info("Speech recognition: \(engine.rawValue)")
