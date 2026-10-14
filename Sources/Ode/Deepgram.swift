@@ -48,17 +48,26 @@ enum DeepgramKey {
 
     @MainActor @discardableResult
     static func save(_ key: String) -> Bool {
-        delete()
-        let item: [String: Any] = [
+        let match: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecAttrLabel as String: service,
-            kSecValueData as String: Data(key.utf8),
         ]
-        let ok = SecItemAdd(item as CFDictionary, nil) == errSecSuccess
-        cached = ok ? .some(key) : nil
-        return ok
+        var item = match
+        item[kSecAttrLabel as String] = service
+        item[kSecValueData as String] = Data(key.utf8)
+        var status = SecItemAdd(item as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            // Already saved. Update it in place: deleting an item Ode didn't create (e.g. one added with the
+            // `security` CLI) silently fails, so delete-then-add would hit this duplicate every time.
+            // Updating one of those may ask for the login password, which is fine here (no menu is open).
+            status = SecItemUpdate(match as CFDictionary, [kSecValueData as String: Data(key.utf8)] as CFDictionary)
+        }
+        if status != errSecSuccess {
+            Log.error("Couldn't save the Deepgram key to the Keychain (OSStatus \(status))")
+        }
+        cached = status == errSecSuccess ? .some(key) : nil
+        return status == errSecSuccess
     }
 
     @MainActor static func delete() {
