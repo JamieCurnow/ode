@@ -834,8 +834,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func choose(_ engine: SpeechEngine) {
         if engine == .deepgram, !DeepgramKey.exists {
-            // Only switch once there's a key to use.
-            askForDeepgramKey(thenUse: true)
+            // Only switch once there's a key to use. Saving one switches to Deepgram.
+            askForDeepgramKey()
             setup.update(engine: speechEngine)
             return
         }
@@ -844,11 +844,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Deferred a beat so a menu that triggered this has fully closed and released the keyboard.
             DispatchQueue.main.async { _ = DeepgramKey.read() }
         }
+        let changed = engine != speechEngine
         speechEngine = engine
         Log.info("Speech recognition: \(engine.rawValue)")
         // Whisper backs up Deepgram too; Apple-only frees the model's memory.
         if engine == .apple { whisper.unload() } else { whisper.prepare() }
         setup.update(engine: engine)
+        if changed { overlay.showNotice(Self.switchedNotice(to: engine)) }
+    }
+
+    /// The pop-up confirming which recogniser dictation now uses.
+    private static func switchedNotice(to engine: SpeechEngine) -> String {
+        switch engine {
+        case .deepgram:
+            return "Speech recognition: Deepgram, with your API key"
+        case .apple:
+            return "Speech recognition: Apple, on your Mac"
+        case .whisper:
+            // Loading from disk takes under a second; only a download is worth mentioning.
+            if FileManager.default.fileExists(atPath: WhisperEngine.modelFile.path) {
+                return "Speech recognition: Whisper, on your Mac"
+            }
+            return "Speech recognition: Whisper (using Apple until it downloads)"
+        }
     }
 
     @objc private func retryWhisper() { whisper.prepare() }
@@ -862,7 +880,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Asks for a Deepgram key, checks it with Deepgram, and saves it to the Keychain.
-    private func askForDeepgramKey(thenUse: Bool = false) {
+    private func askForDeepgramKey() {
         let alert = NSAlert()
         alert.messageText = "Deepgram API Key"
         alert.informativeText = "Ode streams your audio to Deepgram while you hold the key, for the most accurate "
@@ -894,7 +912,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             Log.info("Deepgram API key saved")
-            if thenUse || speechEngine == .deepgram { choose(.deepgram) }
+            // A new or changed key means they want Deepgram, so switch to it.
+            if speechEngine == .deepgram {
+                overlay.showNotice("Deepgram key updated")
+            } else {
+                choose(.deepgram)
+            }
             setup.update(engine: speechEngine)
         }
     }
